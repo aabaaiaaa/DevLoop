@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm view:*)",
+      "Bash(npm install)",
+      "Bash(npm run typecheck:*)",
+      "Bash(npm run dev:*)",
+      "Bash(npm run build:*)",
+      "Bash(devloop --help:*)",
+      "Bash(timeout:*)",
+      "Bash(ping:*)",
+      "Bash(tasklist)",
+      "Bash(findstr:*)"
+    ]
+  }
+}
