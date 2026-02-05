@@ -1,8 +1,6 @@
 import chalk from 'chalk';
 import * as fs from 'fs/promises';
 import { resolveWorkspace, resolveFeaturePath } from '../core/config.js';
-import { createSession, updateSessionPhase } from '../core/session.js';
-import { createFeatureSession } from '../core/feature-session.js';
 import { runLoop } from '../core/loop.js';
 import { requireClaudeInstalled, buildRunConfig } from './shared.js';
 
@@ -45,16 +43,14 @@ export async function runCommand(options: RunOptions): Promise<void> {
         tokenLimit: options.tokenLimit,
         verbose: options.verbose,
         dryRun: options.dryRun,
-        featureName
+        featureName,
+        sessionAction: 'create-feature'
       });
 
       if (isNaN(config.maxIterations) || config.maxIterations < 1) {
         console.log(chalk.red('Error: max-iterations must be a positive number'));
         process.exit(1);
       }
-
-      // Create/update feature session (will be committed with first iteration)
-      await createFeatureSession(workspace, featureName, 'run');
 
       try {
         await runLoop(config);
@@ -80,17 +76,14 @@ export async function runCommand(options: RunOptions): Promise<void> {
     maxIterations: options.maxIterations,
     tokenLimit: options.tokenLimit,
     verbose: options.verbose,
-    dryRun: options.dryRun
+    dryRun: options.dryRun,
+    sessionAction: 'create'
   });
 
   if (isNaN(config.maxIterations) || config.maxIterations < 1) {
     console.log(chalk.red('Error: max-iterations must be a positive number'));
     process.exit(1);
   }
-
-  // Create/update session for run phase (will be committed with first iteration)
-  await createSession(workspace, 'run');
-  await updateSessionPhase(workspace, 'run');
 
   try {
     await runLoop(config);

@@ -24,6 +24,7 @@ export interface RunConfigOptions {
   verbose?: boolean;
   dryRun?: boolean;
   featureName?: string;
+  sessionAction?: 'create' | 'update' | 'create-feature' | 'none';
 }
 
 /**
@@ -38,6 +39,7 @@ export function buildRunConfig(options: RunConfigOptions): DevLoopConfig {
     verbose: options.verbose || false,
     dryRun: options.dryRun || false,
     tokenLimit: options.tokenLimit ? parseInt(options.tokenLimit, 10) : undefined,
-    featureName: options.featureName
+    featureName: options.featureName,
+    sessionAction: options.sessionAction
   };
 }

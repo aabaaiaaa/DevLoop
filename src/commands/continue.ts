@@ -158,14 +158,13 @@ async function continueRequirements(workspace: string, sessionId: string | null)
 }
 
 async function continueRun(workspace: string, options: ContinueOptions): Promise<void> {
-  await updateSessionPhase(workspace, 'run');
-
   const config = buildRunConfig({
     workspace,
     maxIterations: options.maxIterations,
     tokenLimit: options.tokenLimit,
     verbose: options.verbose,
-    dryRun: false
+    dryRun: false,
+    sessionAction: 'update'
   });
 
   await runLoop(config);
@@ -197,7 +196,8 @@ async function continueFeatureRun(workspace: string, featureName: string, requir
     tokenLimit: options.tokenLimit,
     verbose: options.verbose,
     dryRun: false,
-    featureName
+    featureName,
+    sessionAction: 'update'
   });
 
   await runLoop(config);

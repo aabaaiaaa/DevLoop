@@ -4,8 +4,8 @@ import { DevLoopConfig, IterationLog } from '../types/index.js';
 import { parseRequirements, getNextTask } from '../parser/requirements.js';
 import { readProgress, appendIteration, generateProgressContent } from '../parser/progress.js';
 import { invokeClaudeAutomated, buildTaskPrompt, isApiError } from './claude.js';
-import { updateSessionIteration } from './session.js';
-import { updateFeatureSessionIteration } from './feature-session.js';
+import { createSession, updateSessionPhase, updateSessionIteration } from './session.js';
+import { createFeatureSession, updateFeatureSessionIteration } from './feature-session.js';
 import { commitIteration, commitInterruptedWork, ensureGitRepo, getUncommittedChanges } from './git.js';
 import * as fs from 'fs/promises';
 
@@ -159,6 +159,7 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
   // Check for uncommitted changes (potential interrupted work)
   // Ignore .devloop/ changes as these are session files updated at run start
   let hasInterruptedWork = false;
+  let interruptedDuringTask = false;  // Track if we interrupted mid-task (for end-of-loop messaging)
   if (gitSetup.gitAvailable) {
     const uncommitted = await getUncommittedChanges(config.workspacePath, ['.devloop/']);
     if (uncommitted.hasChanges) {
@@ -174,6 +175,16 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
   }
 
   console.log();
+
+  // Create/update session AFTER uncommitted changes check to avoid false positives
+  if (config.sessionAction === 'create') {
+    await createSession(config.workspacePath, 'run');
+    await updateSessionPhase(config.workspacePath, 'run');
+  } else if (config.sessionAction === 'update') {
+    await updateSessionPhase(config.workspacePath, 'run');
+  } else if (config.sessionAction === 'create-feature' && config.featureName) {
+    await createFeatureSession(config.workspacePath, config.featureName, 'run');
+  }
 
   // Load existing progress to determine starting iteration and token usage
   const existingProgress = await readProgress(config.progressPath);
@@ -305,6 +316,7 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
     console.log(chalk.cyan(`\nIteration ${i}: ${nextTask.id} - ${nextTask.title}`));
     console.log(chalk.gray(`  Priority: ${nextTask.priority}`));
     console.log(chalk.gray(`  Description: ${nextTask.description}`));
+    console.log(chalk.gray(`  Press Ctrl+C to stop after this task completes`));
 
     if (config.dryRun) {
       console.log(chalk.yellow(`  [DRY RUN] Would execute this task`));
@@ -345,6 +357,54 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
     // Stop the spinner interval
     if (spinnerState.interval) {
       clearInterval(spinnerState.interval);
+    }
+
+    // Check if stop was requested during task execution
+    // If so, treat as interrupted - do NOT mark as complete even if Claude exited cleanly
+    if (stopRequested) {
+      if (config.verbose) {
+        console.log(chalk.yellow(`  ⚠ Task interrupted by user request`));
+      } else {
+        spinner.warn(chalk.yellow(`  Task ${nextTask.id} interrupted by user request`));
+      }
+
+      const duration = `${Math.round(result.duration / 1000)}s`;
+
+      // Record as interrupted - task was NOT completed
+      const iterationLog: IterationLog = {
+        iteration: i,
+        timestamp: iterationStart.toISOString(),
+        taskCompleted: null,  // NOT completed
+        summary: `Interrupted: ${nextTask.title} (user requested stop)`,
+        duration,
+        exitStatus: 'interrupted',
+        tokenUsage: result.tokenUsage
+      };
+
+      await appendIteration(config.progressPath, requirements.tasks.length, iterationLog);
+
+      // Update session iteration count
+      if (config.featureName) {
+        await updateFeatureSessionIteration(config.workspacePath, config.featureName, i);
+      } else {
+        await updateSessionIteration(config.workspacePath, i);
+      }
+
+      // Commit the interrupted state (if any changes were made)
+      await commitIteration(
+        config.workspacePath,
+        i,
+        null,  // No task completed
+        null,
+        false, // Not successful
+        config.verbose,
+        config.featureName
+      );
+
+      console.log(chalk.yellow('\nStopping as requested. Task was NOT marked as complete.'));
+      console.log(chalk.gray('Run "devloop continue" to resume and retry this task.'));
+      interruptedDuringTask = true;
+      break;
     }
 
     // Update token tracking (both session and project)
@@ -477,7 +537,9 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
     setTerminalTitle('DevLoop: Complete');
   }
 
-  if (stopRequested) {
+  if (stopRequested && !interruptedDuringTask) {
+    // Only show generic message if we stopped between tasks, not mid-task
+    // (mid-task interruption already printed detailed messaging)
     console.log(chalk.yellow('\nRun was stopped by user. Use "devloop continue" to resume.'));
   }
 }

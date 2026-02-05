@@ -1,6 +1,6 @@
 export type TaskStatus = 'pending' | 'in-progress' | 'done';
 export type TaskPriority = 'high' | 'medium' | 'low';
-export type ExitStatus = 'success' | 'error' | 'partial';
+export type ExitStatus = 'success' | 'error' | 'partial' | 'interrupted';
 export type SessionPhase = 'init' | 'run';
 
 export interface Task {
@@ -60,6 +60,7 @@ export interface DevLoopConfig {
   dryRun: boolean;
   tokenLimit?: number;  // Stop if session tokens exceed this limit
   featureName?: string;  // Optional feature name for feature mode
+  sessionAction?: 'create' | 'update' | 'create-feature' | 'none';  // Session modification to perform after uncommitted check
 }
 
 export type ClaudeErrorType =
