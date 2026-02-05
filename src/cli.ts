@@ -69,11 +69,11 @@ featureCommand
 
 const configCommand = program
   .command('config')
-  .description('Manage workspace configuration');
+  .description('Manage workspace configuration (commit message formats, etc.)');
 
 configCommand
   .command('set <key> <value>')
-  .description('Set a configuration value')
+  .description('Set a config value. Keys: devloopCommitFormat. Variable: {action}')
   .option('-w, --workspace <path>', 'Workspace directory')
   .action(configSetCommand);
 
@@ -91,7 +91,7 @@ configCommand
 
 configCommand
   .command('list')
-  .description('List all configuration values')
+  .description('List all configuration values and available keys')
   .option('-w, --workspace <path>', 'Workspace directory')
   .action(configListCommand);
 

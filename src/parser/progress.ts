@@ -1,4 +1,5 @@
 import * as fs from 'fs/promises';
+import * as path from 'path';
 import { Progress, IterationLog, ExitStatus, ClaudeErrorType, TokenUsage } from '../types/index.js';
 
 export async function readProgress(filePath: string): Promise<Progress | null> {
@@ -129,6 +130,8 @@ export async function writeProgress(filePath: string, progress: Progress): Promi
     progress.completed,
     progress.iterations
   );
+  // Ensure directory exists (for feature mode progress files in progress/ folder)
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, content, 'utf-8');
 }
 

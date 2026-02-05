@@ -32,6 +32,16 @@ The `init` command handles three scenarios:
 
 This allows users who manually create `requirements.md` to run `devloop init` to set up the infrastructure needed for `devloop run`.
 
+After creating the session, `init` also:
+- Detects commit hooks from commitlint/husky/git hooks
+- If hooks detected, prompts user for initial commit message with `{action}` placeholder support
+- Saves the format to `devloopCommitFormat` config for reuse in future DevLoop commits
+
+After the interactive Claude session ends:
+- Ensures a git repo exists (initializes one if needed)
+- Makes an initial commit with all created files
+- If commit fails due to hooks, prompts for a valid message and retries
+
 ### Core Flow
 
 ```
@@ -107,8 +117,10 @@ DevLoop tracks API token usage via Claude's `--output-format json` flag:
 
 - **ClaudeResult.tokenUsage**: Contains `inputTokens`, `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `totalTokens`, and `costUsd`
 - **IterationLog.tokenUsage**: Persisted to `progress.md` for each iteration
-- **Cumulative tracking**: Loop maintains running totals across iterations
-- **Token limit**: `DevLoopConfig.tokenLimit` stops the loop before exceeding the threshold
+- **Session vs Project tracking**: Loop tracks both session tokens (current run) and project tokens (all-time from progress.md)
+- **Token limit**: `DevLoopConfig.tokenLimit` stops the loop when the current session exceeds the threshold (not cumulative across all runs)
+- **Detailed breakdown**: Displays individual token counts (input, output, cache write, cache read) and blended price per million tokens
+- **Price per million**: Calculated as `(cost / tokens) * 1,000,000` - a blended rate useful for gauging efficiency
 
 ### API Error Classification
 
@@ -123,9 +135,24 @@ Errors from Claude CLI are classified in `core/claude.ts`:
 
 API errors (all except `task_failure`) stop the loop immediately. Task failures continue to the next iteration.
 
-Commit message format:
-- Initial: `DevLoop: Initial commit`
-- Success: `DevLoop iteration N: Complete TASK-XXX - Task title`
-- Failure: `DevLoop iteration N: Attempted TASK-XXX - Task title (failed)`
+### Commit Message Format
 
-This enables users and Claude to revert changes if an iteration produces undesirable results.
+All DevLoop commits use the `devloopCommitFormat` config with `{action}` placeholder:
+- Default: `DevLoop: {action}`
+- Example actions: "Initialize workspace", "Complete TASK-001 - Fix bug", "Attempted TASK-002 - Add feature"
+
+**Auto-detection**: During `devloop init`, commit hooks are auto-detected from commitlint, git hooks, and husky. If detected, the user is prompted for a commit message format.
+
+**Manual configuration**:
+```bash
+devloop config set devloopCommitFormat "chore(devloop): {action}"
+devloop config list  # Show current config
+```
+
+**Hook failure handling**: If a commit fails due to a hook, DevLoop:
+1. Displays the hook error and attempted message
+2. Prompts for a valid commit message (with `{action}` placeholder hint)
+3. Retries until successful or user skips
+4. Saves the format for future commits
+
+**Session file handling**: Changes to `.devloop/` are ignored when detecting "interrupted work" and committed with the first iteration instead.

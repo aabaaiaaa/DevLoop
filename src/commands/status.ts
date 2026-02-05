@@ -76,17 +76,26 @@ export async function statusCommand(options: StatusOptions): Promise<void> {
         if (progress) {
           console.log(chalk.gray(`  Iterations run: ${progress.iterations.length}`));
 
-          let totalTokens = 0;
+          let totalTokens = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0 };
           let totalCost = 0;
           for (const iter of progress.iterations) {
             if (iter.tokenUsage) {
-              totalTokens += iter.tokenUsage.totalTokens;
+              totalTokens.input += iter.tokenUsage.inputTokens;
+              totalTokens.output += iter.tokenUsage.outputTokens;
+              totalTokens.cacheWrite += iter.tokenUsage.cacheCreationTokens;
+              totalTokens.cacheRead += iter.tokenUsage.cacheReadTokens;
+              totalTokens.total += iter.tokenUsage.totalTokens;
               totalCost += iter.tokenUsage.costUsd;
             }
           }
-          if (totalTokens > 0) {
-            console.log(chalk.gray(`  Total tokens:   ${totalTokens.toLocaleString()}`));
-            console.log(chalk.gray(`  Total cost:     $${totalCost.toFixed(4)}`));
+          if (totalTokens.total > 0) {
+            const pricePerM = totalTokens.total > 0 ? ((totalCost / totalTokens.total) * 1_000_000).toFixed(2) : '0.00';
+            console.log(chalk.gray(`  Total tokens:   ${totalTokens.total.toLocaleString()}`));
+            console.log(chalk.gray(`    Input:        ${totalTokens.input.toLocaleString()}`));
+            console.log(chalk.gray(`    Output:       ${totalTokens.output.toLocaleString()}`));
+            console.log(chalk.gray(`    Cache write:  ${totalTokens.cacheWrite.toLocaleString()}`));
+            console.log(chalk.gray(`    Cache read:   ${totalTokens.cacheRead.toLocaleString()}`));
+            console.log(chalk.gray(`  Total cost:     $${totalCost.toFixed(4)} (~$${pricePerM}/M)`));
           }
 
           const lastIteration = progress.iterations[progress.iterations.length - 1];
@@ -228,17 +237,26 @@ export async function statusCommand(options: StatusOptions): Promise<void> {
       console.log(chalk.gray(`  Iterations run: ${progress.iterations.length}`));
 
       // Calculate cumulative token usage
-      let totalTokens = 0;
+      let totalTokens = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0 };
       let totalCost = 0;
       for (const iter of progress.iterations) {
         if (iter.tokenUsage) {
-          totalTokens += iter.tokenUsage.totalTokens;
+          totalTokens.input += iter.tokenUsage.inputTokens;
+          totalTokens.output += iter.tokenUsage.outputTokens;
+          totalTokens.cacheWrite += iter.tokenUsage.cacheCreationTokens;
+          totalTokens.cacheRead += iter.tokenUsage.cacheReadTokens;
+          totalTokens.total += iter.tokenUsage.totalTokens;
           totalCost += iter.tokenUsage.costUsd;
         }
       }
-      if (totalTokens > 0) {
-        console.log(chalk.gray(`  Total tokens:   ${totalTokens.toLocaleString()}`));
-        console.log(chalk.gray(`  Total cost:     $${totalCost.toFixed(4)}`));
+      if (totalTokens.total > 0) {
+        const pricePerM = totalTokens.total > 0 ? ((totalCost / totalTokens.total) * 1_000_000).toFixed(2) : '0.00';
+        console.log(chalk.gray(`  Total tokens:   ${totalTokens.total.toLocaleString()}`));
+        console.log(chalk.gray(`    Input:        ${totalTokens.input.toLocaleString()}`));
+        console.log(chalk.gray(`    Output:       ${totalTokens.output.toLocaleString()}`));
+        console.log(chalk.gray(`    Cache write:  ${totalTokens.cacheWrite.toLocaleString()}`));
+        console.log(chalk.gray(`    Cache read:   ${totalTokens.cacheRead.toLocaleString()}`));
+        console.log(chalk.gray(`  Total cost:     $${totalCost.toFixed(4)} (~$${pricePerM}/M)`));
       }
 
       // Check if last iteration failed and show details

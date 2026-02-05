@@ -2,8 +2,53 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import chalk from 'chalk';
-import { formatCommitMessage } from './commit-format.js';
-import { readWorkspaceConfig } from './config.js';
+import { readWorkspaceConfig, writeWorkspaceConfig } from './config.js';
+
+/**
+ * Format a DevLoop internal commit message using the configured format
+ * @param action - What DevLoop is doing (e.g., "Initialize workspace", "Start run")
+ */
+export function formatDevloopCommit(format: string | undefined, action: string): string {
+  if (format) {
+    return format.replace(/\{action\}/g, action).trim();
+  }
+  return `DevLoop: ${action}`;
+}
+
+/**
+ * Get the DevLoop commit message for an action, using workspace config if available
+ */
+export async function getDevloopCommitMessage(workspace: string, action: string): Promise<string> {
+  const config = await readWorkspaceConfig(workspace);
+  return formatDevloopCommit(config.devloopCommitFormat, action);
+}
+
+/**
+ * Save a DevLoop commit format to workspace config, extracting {action} placeholder if possible
+ */
+export async function saveDevloopCommitFormat(workspace: string, userMessage: string, defaultAction: string): Promise<void> {
+  // Try to detect if the user's message contains the default action text
+  // If so, replace it with {action} placeholder for reuse
+  let format: string;
+
+  if (userMessage.includes(defaultAction)) {
+    format = userMessage.replace(defaultAction, '{action}');
+  } else {
+    // User provided a completely custom message, save as-is with {action} appended
+    // unless it already looks like it has a placeholder pattern
+    if (userMessage.includes('{action}')) {
+      format = userMessage;
+    } else {
+      // Can't infer a pattern, just save the literal message
+      // Future commits will use default format
+      format = userMessage;
+    }
+  }
+
+  const config = await readWorkspaceConfig(workspace);
+  config.devloopCommitFormat = format;
+  await writeWorkspaceConfig(workspace, config);
+}
 
 /**
  * Execute a git command and return the result
@@ -183,10 +228,46 @@ export async function ensureGitignore(workspace: string, verbose: boolean = fals
 }
 
 /**
+ * Detect if a git error is related to a pre-commit or commit-msg hook
+ */
+function isHookError(error: string): boolean {
+  const hookIndicators = [
+    'hook',
+    'pre-commit',
+    'commit-msg',
+    'husky',
+    'commitlint',
+    'conventional commit',
+    'commit message',
+    'does not match'
+  ];
+  const lowerError = error.toLowerCase();
+  return hookIndicators.some(indicator => lowerError.includes(indicator));
+}
+
+/**
+ * Remove any 'nul' file that may have been created (Windows artifact).
+ * These files can block git commits and are never needed.
+ */
+async function removeNulFile(workspace: string): Promise<void> {
+  const nulPath = path.join(workspace, 'nul');
+  try {
+    await fs.unlink(nulPath);
+  } catch {
+    // File doesn't exist or couldn't be deleted - that's fine
+  }
+  // Also try to unstage it from git if it was added
+  await execGit(['rm', '--cached', '--ignore-unmatch', 'nul'], workspace);
+}
+
+/**
  * Stage all changes and commit with the given message
  * Returns true if commit was made, false if nothing to commit or error
  */
-export async function gitCommit(workspace: string, message: string, verbose: boolean = false): Promise<{ committed: boolean; error?: string }> {
+export async function gitCommit(workspace: string, message: string, verbose: boolean = false): Promise<{ committed: boolean; error?: string; isHookFailure?: boolean }> {
+  // Remove any 'nul' file (Windows artifact that blocks commits)
+  await removeNulFile(workspace);
+
   // Stage all changes (including .devloop and .claude)
   const addResult = await execGit(['add', '-A'], workspace);
   if (!addResult.success) {
@@ -216,6 +297,20 @@ export async function gitCommit(workspace: string, message: string, verbose: boo
   // Commit the changes
   const commitResult = await execGit(['commit', '-m', message], workspace);
   if (!commitResult.success) {
+    const errorText = commitResult.error || '';
+    const hookFailure = isHookError(errorText);
+
+    if (hookFailure) {
+      console.log(chalk.yellow(`\nGit commit failed due to a hook:`));
+      console.log(chalk.gray(errorText));
+      console.log(chalk.cyan(`\nThe commit message was: "${message}"`));
+      console.log(chalk.yellow(`\nTo fix this, set a custom commit message format:`));
+      console.log(chalk.white(`  devloop config set devloopCommitFormat "<your-format>"`));
+      console.log(chalk.gray(`\nUse {action} placeholder for the action description.`));
+      console.log(chalk.gray(`Example: "chore(devloop): {action}"`));
+      return { committed: false, error: errorText, isHookFailure: true };
+    }
+
     console.log(chalk.yellow(`Git commit failed: ${commitResult.error}`));
     return { committed: false, error: commitResult.error };
   }
@@ -293,7 +388,7 @@ export async function ensureGitRepo(workspace: string, verbose: boolean = false)
  * Check if there are uncommitted changes in the workspace
  * Returns the list of changed files if any
  */
-export async function getUncommittedChanges(workspace: string): Promise<{ hasChanges: boolean; files: string[] }> {
+export async function getUncommittedChanges(workspace: string, ignorePaths?: string[]): Promise<{ hasChanges: boolean; files: string[] }> {
   const gitAvailable = await isGitAvailable();
   if (!gitAvailable) {
     return { hasChanges: false, files: [] };
@@ -310,12 +405,22 @@ export async function getUncommittedChanges(workspace: string): Promise<{ hasCha
   }
 
   // Parse the porcelain output to get file names
-  const files = statusResult.output
+  let files = statusResult.output
     .split('\n')
     .filter(line => line.trim())
     .map(line => line.substring(3).trim()); // Remove status prefix (e.g., " M ", "?? ")
 
-  return { hasChanges: true, files };
+  // Filter out ignored paths
+  if (ignorePaths && ignorePaths.length > 0) {
+    files = files.filter(file => {
+      // Normalize path separators for cross-platform matching
+      const normalizedFile = file.replace(/\\/g, '/');
+      // Check if any ignored path appears anywhere in the file path
+      return !ignorePaths.some(ignorePath => normalizedFile.includes(ignorePath));
+    });
+  }
+
+  return { hasChanges: files.length > 0, files };
 }
 
 /**
@@ -366,14 +471,19 @@ export async function commitInterruptedWork(
     return false;
   }
 
-  let message: string;
+  // Build action description
+  let action: string;
   if (taskId && taskTitle) {
-    message = `DevLoop: Interrupted work on ${taskId} - ${taskTitle}`;
+    action = `Interrupted work on ${taskId} - ${taskTitle}`;
   } else if (taskId) {
-    message = `DevLoop: Interrupted work on ${taskId}`;
+    action = `Interrupted work on ${taskId}`;
   } else {
-    message = 'DevLoop: Interrupted work from previous session';
+    action = 'Interrupted work from previous session';
   }
+
+  // Use devloopCommitFormat if configured
+  const workspaceConfig = await readWorkspaceConfig(workspace);
+  const message = formatDevloopCommit(workspaceConfig.devloopCommitFormat, action);
 
   const result = await gitCommit(workspace, message, verbose);
 
@@ -397,57 +507,39 @@ export async function commitIteration(
   success: boolean,
   verbose: boolean = false,
   featureName?: string
-): Promise<boolean> {
+): Promise<{ committed: boolean; hookFailure?: boolean }> {
   const gitAvailable = await isGitAvailable();
   if (!gitAvailable) {
-    return false;
+    return { committed: false };
   }
 
   const isRepo = await isGitRepo(workspace);
   if (!isRepo) {
-    return false;
+    return { committed: false };
   }
 
-  // Load workspace config for commit format templates
+  // Load workspace config for commit format
   const workspaceConfig = await readWorkspaceConfig(workspace);
-  let message: string;
 
-  // Use custom format if configured
-  if (workspaceConfig.commitMessageFormat && success && taskId && taskTitle) {
-    message = formatCommitMessage(workspaceConfig.commitMessageFormat, {
-      feature: featureName || '',
-      iteration,
-      status: 'Complete',
-      taskId,
-      title: taskTitle
-    });
-  } else if (workspaceConfig.commitMessageFormatFailed && !success && taskId && taskTitle) {
-    message = formatCommitMessage(workspaceConfig.commitMessageFormatFailed, {
-      feature: featureName || '',
-      iteration,
-      status: 'Attempted',
-      taskId,
-      title: taskTitle
-    });
-  } else {
-    // Default format
-    const featurePrefix = featureName ? `[${featureName}] ` : '';
-    if (success && taskId && taskTitle) {
-      message = `DevLoop iteration ${iteration}: ${featurePrefix}Complete ${taskId} - ${taskTitle}`;
-    } else if (taskId && taskTitle) {
-      message = `DevLoop iteration ${iteration}: ${featurePrefix}Attempted ${taskId} - ${taskTitle} (failed)`;
-    } else {
-      message = `DevLoop iteration ${iteration}: ${featurePrefix}No task completed`;
-    }
-  }
+  // Build the action description
+  const featurePrefix = featureName ? `[${featureName}] ` : '';
+  const actionDescription = taskId && taskTitle
+    ? `${featurePrefix}${success ? 'Complete' : 'Attempted'} ${taskId} - ${taskTitle}`
+    : `${featurePrefix}Iteration ${iteration}`;
+
+  // Use devloopCommitFormat if configured, otherwise default
+  const message = formatDevloopCommit(workspaceConfig.devloopCommitFormat, actionDescription);
 
   const result = await gitCommit(workspace, message, verbose);
 
   if (verbose && result.committed) {
     console.log(chalk.gray(`  Git: Committed iteration ${iteration}`));
+  } else if (result.isHookFailure) {
+    // Hook failure message already printed by gitCommit
+    return { committed: false, hookFailure: true };
   } else if (result.error) {
     console.log(chalk.yellow(`  Git: Commit failed - ${result.error}`));
   }
 
-  return result.committed;
+  return { committed: result.committed };
 }

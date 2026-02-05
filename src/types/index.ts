@@ -58,7 +58,7 @@ export interface DevLoopConfig {
   workspacePath: string;
   verbose: boolean;
   dryRun: boolean;
-  tokenLimit?: number;  // Stop if cumulative tokens exceed this limit
+  tokenLimit?: number;  // Stop if session tokens exceed this limit
   featureName?: string;  // Optional feature name for feature mode
 }
 

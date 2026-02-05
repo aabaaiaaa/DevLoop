@@ -5,7 +5,7 @@ interface ConfigOptions {
   workspace?: string;
 }
 
-const VALID_CONFIG_KEYS = ['commitMessageFormat', 'commitMessageFormatFailed'];
+const VALID_CONFIG_KEYS = ['devloopCommitFormat'];
 
 export async function configSetCommand(key: string, value: string, options: ConfigOptions): Promise<void> {
   if (!VALID_CONFIG_KEYS.includes(key)) {
@@ -75,21 +75,24 @@ export async function configListCommand(options: ConfigOptions): Promise<void> {
   console.log(chalk.gray(`Workspace: ${workspace}`));
   console.log();
 
-  if (Object.keys(config).length === 0) {
-    console.log(chalk.gray('No configuration set (using defaults)'));
-    console.log();
-    return;
-  }
-
   for (const key of VALID_CONFIG_KEYS) {
     const value = (config as any)[key];
     if (value !== undefined) {
       console.log(chalk.white(`${key}:`));
-      console.log(chalk.gray(`  ${value}`));
+      console.log(chalk.cyan(`  ${value}`));
     } else {
       console.log(chalk.gray(`${key}: (not set)`));
     }
   }
 
+  console.log();
+  console.log(chalk.white('Variables for devloopCommitFormat:'));
+  console.log(chalk.gray('  {action} - What DevLoop is doing, e.g.:'));
+  console.log(chalk.gray('             "Initialize workspace"'));
+  console.log(chalk.gray('             "Complete TASK-001 - Fix the bug"'));
+  console.log(chalk.gray('             "Attempted TASK-002 - Add feature"'));
+  console.log();
+  console.log(chalk.white('Example:'));
+  console.log(chalk.gray('  devloop config set devloopCommitFormat "chore(devloop): {action}"'));
   console.log();
 }

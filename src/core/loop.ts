@@ -134,7 +134,7 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
   console.log(chalk.gray(`Progress: ${config.progressPath}`));
   console.log(chalk.gray(`Max iterations: ${config.maxIterations}`));
   if (config.tokenLimit) {
-    console.log(chalk.gray(`Token limit: ${config.tokenLimit.toLocaleString()}`));
+    console.log(chalk.gray(`Token limit: ${config.tokenLimit.toLocaleString()} (per session)`));
   }
   console.log(chalk.green(`Workspace restriction: ENABLED (--add-dir)`));
 
@@ -157,9 +157,10 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
   }
 
   // Check for uncommitted changes (potential interrupted work)
+  // Ignore .devloop/ changes as these are session files updated at run start
   let hasInterruptedWork = false;
   if (gitSetup.gitAvailable) {
-    const uncommitted = await getUncommittedChanges(config.workspacePath);
+    const uncommitted = await getUncommittedChanges(config.workspacePath, ['.devloop/']);
     if (uncommitted.hasChanges) {
       hasInterruptedWork = true;
       console.log(chalk.yellow('\nDetected uncommitted changes (possible interrupted work):'));
@@ -178,17 +179,31 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
   const existingProgress = await readProgress(config.progressPath);
   const startIteration = existingProgress ? existingProgress.iterations.length + 1 : 1;
 
-  // Calculate cumulative tokens from previous iterations
-  let cumulativeTokens = 0;
-  let cumulativeCost = 0;
+  // Calculate project totals from previous iterations (for display)
+  let projectTokens = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0 };
+  let projectCost = 0;
   if (existingProgress) {
     for (const iter of existingProgress.iterations) {
       if (iter.tokenUsage) {
-        cumulativeTokens += iter.tokenUsage.totalTokens;
-        cumulativeCost += iter.tokenUsage.costUsd;
+        projectTokens.input += iter.tokenUsage.inputTokens;
+        projectTokens.output += iter.tokenUsage.outputTokens;
+        projectTokens.cacheWrite += iter.tokenUsage.cacheCreationTokens;
+        projectTokens.cacheRead += iter.tokenUsage.cacheReadTokens;
+        projectTokens.total += iter.tokenUsage.totalTokens;
+        projectCost += iter.tokenUsage.costUsd;
       }
     }
   }
+
+  // Track session tokens separately (for limit checking)
+  let sessionTokens = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0 };
+  let sessionCost = 0;
+
+  // Helper to calculate price per million tokens
+  const pricePerMillion = (cost: number, tokens: number): string => {
+    if (tokens === 0) return '0.00';
+    return ((cost / tokens) * 1_000_000).toFixed(2);
+  };
 
   // maxIterations is additional iterations to run, not absolute count
   const endIteration = startIteration + config.maxIterations - 1;
@@ -197,8 +212,10 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
     console.log(chalk.yellow(`Resuming from iteration ${startIteration}`));
     console.log(chalk.gray(`Previously completed: ${existingProgress.completed} tasks`));
     console.log(chalk.gray(`Will run up to ${config.maxIterations} more iterations (${startIteration}-${endIteration})`));
-    if (cumulativeTokens > 0) {
-      console.log(chalk.gray(`Previous token usage: ${cumulativeTokens.toLocaleString()} tokens ($${cumulativeCost.toFixed(4)})`));
+    if (projectTokens.total > 0) {
+      console.log(chalk.gray(`Project tokens: ${projectTokens.total.toLocaleString()} total`));
+      console.log(chalk.gray(`  In: ${projectTokens.input.toLocaleString()} | Out: ${projectTokens.output.toLocaleString()} | Cache +${projectTokens.cacheWrite.toLocaleString()}/-${projectTokens.cacheRead.toLocaleString()}`));
+      console.log(chalk.gray(`Project cost: $${projectCost.toFixed(4)} (~$${pricePerMillion(projectCost, projectTokens.total)}/M)`));
     }
     console.log();
   }
@@ -210,9 +227,9 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
       break;
     }
 
-    // Check token limit before starting iteration
-    if (config.tokenLimit && cumulativeTokens >= config.tokenLimit) {
-      console.log(chalk.yellow(`\nToken limit reached: ${cumulativeTokens.toLocaleString()} / ${config.tokenLimit.toLocaleString()}`));
+    // Check token limit before starting iteration (session tokens only)
+    if (config.tokenLimit && sessionTokens.total >= config.tokenLimit) {
+      console.log(chalk.yellow(`\nSession token limit reached: ${sessionTokens.total.toLocaleString()} / ${config.tokenLimit.toLocaleString()}`));
       console.log(chalk.yellow('Stopping to prevent rate limit errors.'));
       break;
     }
@@ -330,10 +347,21 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
       clearInterval(spinnerState.interval);
     }
 
-    // Update cumulative token tracking
+    // Update token tracking (both session and project)
     if (result.tokenUsage) {
-      cumulativeTokens += result.tokenUsage.totalTokens;
-      cumulativeCost += result.tokenUsage.costUsd;
+      sessionTokens.input += result.tokenUsage.inputTokens;
+      sessionTokens.output += result.tokenUsage.outputTokens;
+      sessionTokens.cacheWrite += result.tokenUsage.cacheCreationTokens;
+      sessionTokens.cacheRead += result.tokenUsage.cacheReadTokens;
+      sessionTokens.total += result.tokenUsage.totalTokens;
+      sessionCost += result.tokenUsage.costUsd;
+
+      projectTokens.input += result.tokenUsage.inputTokens;
+      projectTokens.output += result.tokenUsage.outputTokens;
+      projectTokens.cacheWrite += result.tokenUsage.cacheCreationTokens;
+      projectTokens.cacheRead += result.tokenUsage.cacheReadTokens;
+      projectTokens.total += result.tokenUsage.totalTokens;
+      projectCost += result.tokenUsage.costUsd;
     }
 
     const duration = `${Math.round(result.duration / 1000)}s`;
@@ -372,9 +400,13 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
       } else {
         spinner.succeed(chalk.green(`  Completed ${nextTask.id} (${duration})${tokenInfo}`));
       }
-      // Show cumulative token usage
+      // Show detailed token usage breakdown
       if (result.tokenUsage) {
-        console.log(chalk.gray(`    Cumulative: ${cumulativeTokens.toLocaleString()} tokens ($${cumulativeCost.toFixed(4)})`));
+        const t = result.tokenUsage;
+        console.log(chalk.gray(`    This iteration: ${t.totalTokens.toLocaleString()} tokens ($${t.costUsd.toFixed(4)}, ~$${pricePerMillion(t.costUsd, t.totalTokens)}/M)`));
+        console.log(chalk.gray(`      In: ${t.inputTokens.toLocaleString()} | Out: ${t.outputTokens.toLocaleString()} | Cache +${t.cacheCreationTokens.toLocaleString()}/-${t.cacheReadTokens.toLocaleString()}`));
+        console.log(chalk.gray(`    Session: ${sessionTokens.total.toLocaleString()} tokens ($${sessionCost.toFixed(4)}, ~$${pricePerMillion(sessionCost, sessionTokens.total)}/M)`));
+        console.log(chalk.gray(`    Project: ${projectTokens.total.toLocaleString()} tokens ($${projectCost.toFixed(4)}, ~$${pricePerMillion(projectCost, projectTokens.total)}/M)`));
       }
     } else {
       if (config.verbose) {
@@ -398,7 +430,7 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
     }
 
     // Commit iteration changes to git (if available)
-    await commitIteration(
+    const commitResult = await commitIteration(
       config.workspacePath,
       i,
       result.success ? nextTask.id : null,
@@ -407,6 +439,13 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
       config.verbose,
       config.featureName
     );
+
+    // Stop loop if commit failed due to a hook
+    if (commitResult.hookFailure) {
+      console.log(chalk.yellow('\nStopping DevLoop due to commit hook failure.'));
+      console.log(chalk.gray('Fix the commit message format and run "devloop run" again.'));
+      break;
+    }
 
     // Small delay between iterations to avoid rate limiting
     await sleep(1000);

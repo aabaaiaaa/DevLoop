@@ -3,12 +3,14 @@ import * as path from 'path';
 import * as os from 'os';
 import * as readline from 'readline';
 import chalk from 'chalk';
-import { resolveWorkspace, getRequirementsPath, resolveFeaturePath } from '../core/config.js';
+import { resolveWorkspace, getRequirementsPath, resolveFeaturePath, readWorkspaceConfig, writeWorkspaceConfig } from '../core/config.js';
 import { createSession, readSession } from '../core/session.js';
 import { createFeatureSession, readFeatureSession } from '../core/feature-session.js';
 import { spawnClaudeInteractive } from '../core/claude.js';
 import { requireClaudeInstalled } from './shared.js';
 import { generateRequirementsTemplate } from '../parser/requirements.js';
+import { detectCommitFormat } from '../core/commit-format.js';
+import { ensureGitRepo, gitCommit, saveDevloopCommitFormat, getDevloopCommitMessage } from '../core/git.js';
 
 function generateWorkspaceClaudeMd(workspace: string): string {
   const platform = os.platform() === 'win32' ? 'Windows' : os.platform() === 'darwin' ? 'macOS' : 'Linux';
@@ -80,6 +82,93 @@ async function promptUser(question: string): Promise<boolean> {
       resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes' || answer === '');
     });
   });
+}
+
+/**
+ * Prompt user for a string input
+ */
+async function promptForInput(question: string): Promise<string> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.trim());
+    });
+  });
+}
+
+/**
+ * Attempt to commit with retry on hook failure
+ * Keeps asking for a new message until commit succeeds or user gives up
+ * Saves the format for future DevLoop commits before retrying
+ */
+async function commitWithRetry(workspace: string, initialMessage: string, action: string): Promise<boolean> {
+  let message = initialMessage;
+
+  while (true) {
+    const result = await gitCommit(workspace, message, false);
+
+    if (result.committed) {
+      console.log(chalk.green('Committed initial files to git.'));
+      return true;
+    }
+
+    if (result.isHookFailure) {
+      // Hook failure message already printed by gitCommit, ask for new message
+      console.log(chalk.gray(`\nTip: Use {action} as a placeholder for reusable formats.`));
+      console.log(chalk.gray(`  Example: "chore(devloop): {action}" → "chore(devloop): ${action}"`));
+      const newMessage = await promptForInput(chalk.cyan('Enter a valid commit message (or press Enter to skip): '));
+
+      if (!newMessage) {
+        console.log(chalk.yellow('Skipping initial commit. You can commit manually later.'));
+        return false;
+      }
+
+      // Save the format BEFORE retrying so config.json is included in the commit
+      await saveDevloopCommitFormat(workspace, newMessage, action);
+      console.log(chalk.gray('Saved commit format for future DevLoop commits.'));
+
+      // Expand {action} placeholder if present
+      message = newMessage.replace(/\{action\}/g, action);
+      // Loop continues with new message
+    } else {
+      // Some other error, don't retry
+      return false;
+    }
+  }
+}
+
+/**
+ * Detect and configure commit message format based on project hooks/config
+ * Returns the initial commit message to use and the action string for format saving
+ */
+async function detectAndConfigureCommitFormat(workspace: string, action: string): Promise<{ message: string; action: string; isCustom: boolean }> {
+  const detection = await detectCommitFormat(workspace);
+  const defaultMessage = `DevLoop: ${action}`;
+
+  if (detection.detected) {
+    // Ask user for initial commit message since hooks are present
+    console.log(chalk.yellow(`\nDetected commit message hooks (${detection.source}).`));
+    console.log(chalk.cyan('The default message may not pass validation.'));
+    console.log(chalk.gray(`  Default: "${defaultMessage}"`));
+    console.log(chalk.gray(`  Tip: Use {action} placeholder for reusable format, e.g., "chore(devloop): {action}"`));
+    const customMessage = await promptForInput(chalk.cyan('Commit message (press Enter for default): '));
+
+    if (customMessage) {
+      // Expand {action} placeholder
+      const expanded = customMessage.replace(/\{action\}/g, action);
+      // Save the format for future DevLoop commits
+      await saveDevloopCommitFormat(workspace, customMessage, action);
+      console.log(chalk.gray('Saved commit format for future DevLoop commits.'));
+      return { message: expanded, action, isCustom: true };
+    }
+  }
+
+  return { message: defaultMessage, action, isCustom: false };
 }
 
 function generateFeatureClaudeMd(workspace: string, featureName: string, requirementsPath: string): string {
@@ -216,6 +305,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
       // Create feature session for init phase
       await createFeatureSession(workspace, featureName, 'init');
 
+      // Detect and configure commit message format, get initial commit message
+      const initAction = `Initialize feature "${featureName}"`;
+      const commitConfig = await detectAndConfigureCommitFormat(workspace, initAction);
+
       console.log(chalk.cyan('\nStarting interactive Claude session...'));
       if (adoptExisting) {
         console.log(chalk.gray('Claude can help you review and refine your existing requirements.'));
@@ -239,9 +332,13 @@ export async function initCommand(options: InitOptions): Promise<void> {
       const child = spawnClaudeInteractive(workspace, null);
 
       // Handle process exit
-      child.on('close', (code) => {
+      child.on('close', async (code) => {
         console.log(chalk.blue('\n\nSession ended.'));
         if (code === 0) {
+          // Ensure git repo exists and make initial commit
+          await ensureGitRepo(workspace);
+          await commitWithRetry(workspace, commitConfig.message, commitConfig.action);
+
           console.log(chalk.green('Feature requirements ready at:'), requirementsPath);
           console.log(chalk.gray(`Run "devloop status --feature ${featureName}" to see your tasks.`));
           console.log(chalk.gray(`Run "devloop run --feature ${featureName}" to start executing tasks.`));
@@ -319,6 +416,10 @@ export async function initCommand(options: InitOptions): Promise<void> {
   // Create session for init phase
   await createSession(workspace, 'init');
 
+  // Detect and configure commit message format, get initial commit message
+  const initAction = 'Initialize workspace';
+  const commitConfig = await detectAndConfigureCommitFormat(workspace, initAction);
+
   console.log(chalk.cyan('\nStarting interactive Claude session...'));
   if (adoptExisting) {
     console.log(chalk.gray('Claude can help you review and refine your existing requirements.'));
@@ -342,9 +443,13 @@ export async function initCommand(options: InitOptions): Promise<void> {
   const child = spawnClaudeInteractive(workspace, null);
 
   // Handle process exit
-  child.on('close', (code) => {
+  child.on('close', async (code) => {
     console.log(chalk.blue('\n\nSession ended.'));
     if (code === 0) {
+      // Ensure git repo exists and make initial commit
+      await ensureGitRepo(workspace);
+      await commitWithRetry(workspace, commitConfig.message, commitConfig.action);
+
       console.log(chalk.green('Requirements file is ready at:'), requirementsPath);
       console.log(chalk.gray('Run "devloop status" to see your tasks.'));
       console.log(chalk.gray('Run "devloop run" to start executing tasks.'));

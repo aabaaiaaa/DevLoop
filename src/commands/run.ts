@@ -53,7 +53,7 @@ export async function runCommand(options: RunOptions): Promise<void> {
         process.exit(1);
       }
 
-      // Create/update feature session
+      // Create/update feature session (will be committed with first iteration)
       await createFeatureSession(workspace, featureName, 'run');
 
       try {
@@ -88,7 +88,7 @@ export async function runCommand(options: RunOptions): Promise<void> {
     process.exit(1);
   }
 
-  // Create/update session for run phase
+  // Create/update session for run phase (will be committed with first iteration)
   await createSession(workspace, 'run');
   await updateSessionPhase(workspace, 'run');
 

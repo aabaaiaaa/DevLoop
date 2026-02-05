@@ -11,6 +11,6 @@ export interface FeatureSession {
 }
 
 export interface WorkspaceConfig {
-  commitMessageFormat?: string;
-  commitMessageFormatFailed?: string;
+  /** Format for all DevLoop commits. Use {action} placeholder. */
+  devloopCommitFormat?: string;
 }
