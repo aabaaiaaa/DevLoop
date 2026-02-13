@@ -21,6 +21,7 @@ export interface RunConfigOptions {
   progressPath?: string;
   maxIterations?: string;
   tokenLimit?: string;
+  costLimit?: string;
   verbose?: boolean;
   dryRun?: boolean;
   featureName?: string;
@@ -39,6 +40,7 @@ export function buildRunConfig(options: RunConfigOptions): DevLoopConfig {
     verbose: options.verbose || false,
     dryRun: options.dryRun || false,
     tokenLimit: options.tokenLimit ? parseInt(options.tokenLimit, 10) : undefined,
+    costLimit: options.costLimit ? parseFloat(options.costLimit) : undefined,
     featureName: options.featureName,
     sessionAction: options.sessionAction
   };

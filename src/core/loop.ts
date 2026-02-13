@@ -136,6 +136,9 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
   if (config.tokenLimit) {
     console.log(chalk.gray(`Token limit: ${config.tokenLimit.toLocaleString()} (per session)`));
   }
+  if (config.costLimit) {
+    console.log(chalk.gray(`Cost limit: $${config.costLimit.toFixed(2)} (per session)`));
+  }
   console.log(chalk.green(`Workspace restriction: ENABLED (--add-dir)`));
 
   if (config.dryRun) {
@@ -242,6 +245,13 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
     if (config.tokenLimit && sessionTokens.total >= config.tokenLimit) {
       console.log(chalk.yellow(`\nSession token limit reached: ${sessionTokens.total.toLocaleString()} / ${config.tokenLimit.toLocaleString()}`));
       console.log(chalk.yellow('Stopping to prevent rate limit errors.'));
+      break;
+    }
+
+    // Check cost limit before starting iteration (session cost only)
+    if (config.costLimit && sessionCost >= config.costLimit) {
+      console.log(chalk.yellow(`\nSession cost limit reached: $${sessionCost.toFixed(4)} / $${config.costLimit.toFixed(2)}`));
+      console.log(chalk.yellow('Stopping to control costs.'));
       break;
     }
 

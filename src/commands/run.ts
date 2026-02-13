@@ -9,6 +9,7 @@ interface RunOptions {
   feature?: string;
   maxIterations?: string;
   tokenLimit?: string;
+  costLimit?: string;
   verbose?: boolean;
   dryRun?: boolean;
 }
@@ -41,6 +42,7 @@ export async function runCommand(options: RunOptions): Promise<void> {
         progressPath,
         maxIterations: options.maxIterations,
         tokenLimit: options.tokenLimit,
+        costLimit: options.costLimit,
         verbose: options.verbose,
         dryRun: options.dryRun,
         featureName,
@@ -75,6 +77,7 @@ export async function runCommand(options: RunOptions): Promise<void> {
     workspace,
     maxIterations: options.maxIterations,
     tokenLimit: options.tokenLimit,
+    costLimit: options.costLimit,
     verbose: options.verbose,
     dryRun: options.dryRun,
     sessionAction: 'create'

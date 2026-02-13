@@ -12,6 +12,7 @@ interface ContinueOptions {
   feature?: string;
   maxIterations?: string;
   tokenLimit?: string;
+  costLimit?: string;
   verbose?: boolean;
 }
 
@@ -162,6 +163,7 @@ async function continueRun(workspace: string, options: ContinueOptions): Promise
     workspace,
     maxIterations: options.maxIterations,
     tokenLimit: options.tokenLimit,
+    costLimit: options.costLimit,
     verbose: options.verbose,
     dryRun: false,
     sessionAction: 'update'
@@ -194,6 +196,7 @@ async function continueFeatureRun(workspace: string, featureName: string, requir
     progressPath,
     maxIterations: options.maxIterations,
     tokenLimit: options.tokenLimit,
+    costLimit: options.costLimit,
     verbose: options.verbose,
     dryRun: false,
     featureName,

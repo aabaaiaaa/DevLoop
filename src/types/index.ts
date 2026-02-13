@@ -59,6 +59,7 @@ export interface DevLoopConfig {
   verbose: boolean;
   dryRun: boolean;
   tokenLimit?: number;  // Stop if session tokens exceed this limit
+  costLimit?: number;   // Stop if session cost (USD) exceeds this limit
   featureName?: string;  // Optional feature name for feature mode
   sessionAction?: 'create' | 'update' | 'create-feature' | 'none';  // Session modification to perform after uncommitted check
 }

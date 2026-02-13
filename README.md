@@ -2,6 +2,8 @@
 
 Automate iterative development with Claude Code. DevLoop helps you break down projects into small tasks and automatically executes them in a loop using Claude.
 
+![DevLoop in action](images/example-devloop-usage.png)
+
 ## How It Works
 
 1. **Define requirements** - Use an interactive Claude session to break your project into small tasks (~30 min each)
@@ -86,8 +88,8 @@ Workspace files (`requirements.md`, `progress.md`, `CLAUDE.md`, `.devloop/`) are
 ## Quick Start
 
 ```bash
-# 1. Set your workspace (or use -w flag on each command)
-devloop workspace set C:\Projects\MyApp
+# 1. Navigate to your project directory
+cd C:\Projects\MyApp
 
 # 2. Create requirements.md interactively with Claude
 devloop init
@@ -101,6 +103,16 @@ devloop run
 # 5. Come back later and continue
 devloop continue
 ```
+
+## Tips for `devloop init`
+
+When you run `devloop init`, DevLoop creates a placeholder `requirements.md` and then opens an interactive Claude session. Here's what to expect:
+
+- **Claude will ask to overwrite the file** — say yes. The placeholder is just a template; Claude needs to replace it with your actual tasks.
+- **Describe what you want to build.** Include any preferences for technologies, libraries, or approaches. Claude will break your idea into small tasks (~30 min each) with dependencies.
+- **Don't ask Claude to start building the project.** The init session is only for creating the requirements document. Implementation happens later when you run `devloop run`. If Claude starts writing code or creating files, remind it to just write the requirements doc.
+- **Review the tasks before exiting.** Ask Claude to adjust priorities, split large tasks, or add missing steps. It's much easier to fix the plan now than after tasks have started running.
+- **Exit when you're happy** with Ctrl+C or `/exit`. DevLoop will commit the requirements and you can start running tasks.
 
 ## Commands
 
@@ -133,7 +145,8 @@ Executes tasks from `requirements.md` in a loop. Each iteration:
 ```bash
 devloop run                     # Run with defaults (10 iterations)
 devloop run -n 5                # Limit to 5 iterations
-devloop run -t 500000           # Stop when cumulative tokens exceed 500k
+devloop run -t 500000           # Stop when session tokens exceed 500k
+devloop run -c 5                # Stop when session cost exceeds $5
 devloop run -v                  # Verbose output (show Claude's work)
 devloop run --dry-run           # Show what would run without executing
 devloop run -w ./my-project     # Specify workspace
@@ -158,6 +171,7 @@ Resume work after a break. Prompts you to choose:
 devloop continue
 devloop continue -n 20          # Continue run with 20 max iterations
 devloop continue -t 500000      # Continue with token limit
+devloop continue -c 5           # Continue with $5 cost limit
 ```
 
 ### `devloop workspace`
@@ -166,7 +180,7 @@ View or set the default workspace directory.
 
 ```bash
 devloop workspace               # Show current default
-devloop workspace set C:\Dev    # Set default workspace
+devloop workspace C:\Dev        # Set default workspace
 ```
 
 ## File Structure
@@ -179,7 +193,8 @@ my-project/
 ├── progress.md           # Iteration logs (auto-generated)
 ├── CLAUDE.md             # Context for Claude (auto-generated)
 └── .devloop/
-    └── session.json      # Session state for resuming
+    ├── session.json      # Session state for resuming
+    └── config.json       # Workspace config (commit format, etc.)
 ```
 
 Global config is stored at `~/.devloop/config.json`.
@@ -237,6 +252,24 @@ The partial work is preserved in git history. If it was needed (and tests fail w
 
 If DevLoop cannot commit the uncommitted changes (e.g., git configuration issues), it will stop and ask you to resolve manually using `git status`, then either commit or discard the changes before running `devloop continue`.
 
+## Commit Message Format
+
+DevLoop commits use a configurable format with an `{action}` placeholder that gets replaced with what DevLoop did.
+
+- **Default format**: `DevLoop: {action}`
+- **Example actions**: "Initialize workspace", "Complete TASK-001 - Fix bug", "Attempted TASK-002 - Add feature"
+
+**Auto-detection during init**: When you run `devloop init`, DevLoop detects commit hooks (commitlint, husky, git hooks). If hooks are found, you're prompted for a commit message format.
+
+**Manual configuration**:
+
+```bash
+devloop config set devloopCommitFormat "chore(devloop): {action}"
+devloop config list                    # Show current config
+```
+
+**Hook failure handling**: If a commit fails due to a hook, DevLoop displays the error, prompts you for a valid commit message (with `{action}` placeholder), retries, and saves the format for future commits.
+
 ## Safety
 
 When running automated tasks, DevLoop restricts Claude to your workspace:
@@ -251,7 +284,8 @@ DevLoop tracks API token usage across iterations:
 
 - **Per-iteration tracking**: Each iteration logs input tokens, output tokens, and cost
 - **Cumulative display**: After each task, shows running total of tokens used
-- **Token limits**: Use `-t, --token-limit` to automatically stop before exceeding a threshold
+- **Token limits**: Use `-t, --token-limit` to stop before exceeding a token threshold
+- **Cost limits**: Use `-c, --cost-limit` to stop before exceeding a dollar amount
 - **Status display**: `devloop status` shows total tokens and cost for the project
 
 Token data is stored in `progress.md` and persists across sessions.
@@ -271,6 +305,59 @@ When `devloop status` is run after a failure, it displays:
 - Error type (rate_limit, auth_error, etc.)
 - Error summary and detailed message
 - Timestamp of the failure
+
+## Feature Mode
+
+Feature mode lets you organize work into independent features, each with their own requirements, progress tracking, and session state. This is useful for larger projects where you want to work on multiple features in parallel without mixing their tasks.
+
+### File Structure
+
+```
+my-project/
+├── requirements/
+│   ├── auth.md              # Feature-specific requirements
+│   └── dashboard.md
+├── progress/
+│   ├── auth.md              # Feature-specific progress
+│   └── dashboard.md
+└── .devloop/
+    └── features/
+        ├── auth.json        # Feature session state
+        └── dashboard.json
+```
+
+### Usage
+
+Use the `--feature <name>` flag on any command:
+
+```bash
+devloop init --feature auth           # Create requirements/auth.md
+devloop run --feature auth            # Run tasks for auth feature
+devloop continue --feature auth       # Continue auth feature
+devloop status --feature auth         # Check auth feature status
+```
+
+### Managing Features
+
+```bash
+devloop feature list                  # List all features
+devloop feature status                # Summary of all features
+```
+
+### Quick Example
+
+```bash
+# Create two independent features
+devloop init --feature auth
+devloop init --feature dashboard
+
+# Work on them independently
+devloop run --feature auth -n 5
+devloop run --feature dashboard -n 5
+
+# Check overall status
+devloop feature status
+```
 
 ## Requirements
 

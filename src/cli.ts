@@ -29,6 +29,7 @@ program
   .option('--feature <name>', 'Feature mode: work on specific feature')
   .option('-n, --max-iterations <number>', 'Maximum iterations for run', '10')
   .option('-t, --token-limit <number>', 'Stop when cumulative tokens exceed this limit')
+  .option('-c, --cost-limit <number>', 'Stop when session cost (USD) exceeds this limit')
   .option('-v, --verbose', 'Verbose output')
   .action(continueCommand);
 
@@ -39,6 +40,7 @@ program
   .option('--feature <name>', 'Feature mode: run specific feature tasks')
   .option('-n, --max-iterations <number>', 'Maximum iterations', '10')
   .option('-t, --token-limit <number>', 'Stop when cumulative tokens exceed this limit')
+  .option('-c, --cost-limit <number>', 'Stop when session cost (USD) exceeds this limit')
   .option('-v, --verbose', 'Verbose output')
   .option('--dry-run', 'Show what would be done without executing')
   .action(runCommand);

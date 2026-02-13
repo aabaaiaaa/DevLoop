@@ -28,12 +28,15 @@ ${platform === 'Windows' ? '- Use Windows-compatible commands (e.g., use backsla
 
 You are helping the user create a **requirements.md** file for their project.
 
+**IMPORTANT: Do NOT implement the project. Do NOT write code, create source files, install packages, or build anything. Your ONLY job right now is to write the requirements.md document. The actual implementation will happen later in a separate automated process.**
+
 ### Your Job
 
 1. Ask the user what they want to build
 2. Break down their project into small, manageable tasks (each ~30 minutes of work)
 3. Write tasks to \`requirements.md\` in the format below
 4. Ensure tasks have clear dependencies where needed
+5. Stop when the requirements document is complete — do NOT start implementing tasks
 
 ### Task Format
 
@@ -61,6 +64,7 @@ Each task in requirements.md MUST follow this exact format:
 - Dependencies: \`none\` or comma-separated task IDs (e.g., \`TASK-001, TASK-002\`)
 - Keep descriptions clear and actionable
 - The requirements.md file already exists at: ${path.join(workspace, 'requirements.md')}
+- **Do NOT create any files other than requirements.md** — no source code, no config files, no project scaffolding
 `;
 }
 
@@ -188,12 +192,15 @@ ${platform === 'Windows' ? '- Use Windows-compatible commands (e.g., use backsla
 
 You are helping the user create a **${requirementsPath}** file for the "${featureName}" feature.
 
+**IMPORTANT: Do NOT implement the feature. Do NOT write code, create source files, install packages, or build anything. Your ONLY job right now is to write the requirements document. The actual implementation will happen later in a separate automated process.**
+
 ### Your Job
 
 1. Ask the user what they want to build for this feature
 2. Break down the feature into small, manageable tasks (each ~30 minutes of work)
 3. Write tasks to \`${requirementsPath}\` in the format below
 4. Ensure tasks have clear dependencies where needed
+5. Stop when the requirements document is complete — do NOT start implementing tasks
 
 ### Task Format
 
@@ -221,6 +228,7 @@ Each task in ${requirementsPath} MUST follow this exact format:
 - Dependencies: \`none\` or comma-separated task IDs (e.g., \`TASK-001, TASK-002\`)
 - Keep descriptions clear and actionable
 - The requirements file is at: ${requirementsPath}
+- **Do NOT create any files other than the requirements file** — no source code, no config files, no project scaffolding
 `;
 }
 
@@ -309,24 +317,15 @@ export async function initCommand(options: InitOptions): Promise<void> {
       const initAction = `Initialize feature "${featureName}"`;
       const commitConfig = await detectAndConfigureCommitFormat(workspace, initAction);
 
-      console.log(chalk.cyan('\nStarting interactive Claude session...'));
-      if (adoptExisting) {
-        console.log(chalk.gray('Claude can help you review and refine your existing requirements.'));
-        console.log(chalk.gray('Or exit with Ctrl+C or /exit if your requirements are ready.'));
-      } else {
-        console.log(chalk.gray('Describe your feature and Claude will help break it into tasks.'));
-        console.log(chalk.gray('Each task should be small (~30 mins of work).'));
-      }
-      console.log(chalk.gray('Exit with Ctrl+C or /exit when done.\n'));
-
-      // Show the task format Claude should use
-      console.log(chalk.yellow('Task format for feature requirements:'));
-      console.log(chalk.gray('  ### TASK-001: Task title'));
-      console.log(chalk.gray('  - **Status**: pending'));
-      console.log(chalk.gray('  - **Priority**: high/medium/low'));
-      console.log(chalk.gray('  - **Dependencies**: none (or TASK-XXX)'));
-      console.log(chalk.gray('  - **Description**: What needs to be done'));
-      console.log();
+      console.log(chalk.yellow.bold('\n--- Tips ---'));
+      console.log(chalk.yellow('  Claude will ask to overwrite the requirements file — say yes (the placeholder is just a template).'));
+      console.log(chalk.yellow('  Describe what you want to build. Include any preferences for technologies or approaches.'));
+      console.log(chalk.yellow('  Do NOT ask Claude to build the feature — this session is only for planning.'));
+      console.log(chalk.yellow('  If Claude starts writing code or creating files, remind it to just write the requirements doc.'));
+      console.log(chalk.yellow('  Review the tasks before exiting. Ask Claude to adjust priorities or split large tasks.'));
+      console.log(chalk.yellow('  Exit with Ctrl+C or /exit when you\'re happy with the plan.'));
+      console.log(chalk.yellow(`  Implementation happens later with "devloop run --feature ${featureName}".`));
+      console.log(chalk.yellow('------------\n'));
 
       // Spawn interactive Claude (no initial prompt - let user drive)
       const child = spawnClaudeInteractive(workspace, null);
@@ -420,24 +419,15 @@ export async function initCommand(options: InitOptions): Promise<void> {
   const initAction = 'Initialize workspace';
   const commitConfig = await detectAndConfigureCommitFormat(workspace, initAction);
 
-  console.log(chalk.cyan('\nStarting interactive Claude session...'));
-  if (adoptExisting) {
-    console.log(chalk.gray('Claude can help you review and refine your existing requirements.'));
-    console.log(chalk.gray('Or exit with Ctrl+C or /exit if your requirements are ready.'));
-  } else {
-    console.log(chalk.gray('Describe your project and Claude will help break it into tasks.'));
-    console.log(chalk.gray('Each task should be small (~30 mins of work).'));
-  }
-  console.log(chalk.gray('Exit with Ctrl+C or /exit when done.\n'));
-
-  // Show the task format Claude should use
-  console.log(chalk.yellow('Task format for requirements.md:'));
-  console.log(chalk.gray('  ### TASK-001: Task title'));
-  console.log(chalk.gray('  - **Status**: pending'));
-  console.log(chalk.gray('  - **Priority**: high/medium/low'));
-  console.log(chalk.gray('  - **Dependencies**: none (or TASK-XXX)'));
-  console.log(chalk.gray('  - **Description**: What needs to be done'));
-  console.log();
+  console.log(chalk.yellow.bold('\n--- Tips ---'));
+  console.log(chalk.yellow('  Claude will ask to overwrite requirements.md — say yes (the placeholder is just a template).'));
+  console.log(chalk.yellow('  Describe what you want to build. Include any preferences for technologies or approaches.'));
+  console.log(chalk.yellow('  Do NOT ask Claude to build the project — this session is only for planning.'));
+  console.log(chalk.yellow('  If Claude starts writing code or creating files, remind it to just write the requirements doc.'));
+  console.log(chalk.yellow('  Review the tasks before exiting. Ask Claude to adjust priorities or split large tasks.'));
+  console.log(chalk.yellow('  Exit with Ctrl+C or /exit when you\'re happy with the plan.'));
+  console.log(chalk.yellow('  Implementation happens later with "devloop run".'));
+  console.log(chalk.yellow('------------\n'));
 
   // Spawn interactive Claude (no initial prompt - let user drive)
   const child = spawnClaudeInteractive(workspace, null);
