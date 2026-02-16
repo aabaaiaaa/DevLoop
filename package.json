@@ -1,9 +1,12 @@
 {
-  "name": "devloop",
+  "name": "claude-devloop",
   "version": "1.0.0",
   "description": "Automate iterative development with Claude Code",
   "type": "module",
   "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
   "bin": {
     "devloop": "dist/index.js"
   },

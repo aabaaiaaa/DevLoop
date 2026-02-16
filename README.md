@@ -14,34 +14,22 @@ Each iteration runs in a fresh Claude context, so you get consistent behavior wi
 
 ## Installation
 
-### Windows
-
-```powershell
-# Navigate to the DevLoop directory
-cd C:\path\to\DevLoop
-
-# Install dependencies
-npm install
-
-# Build the TypeScript
-npm run build
-
-# Link globally (run as Administrator if you get permission errors)
-npm link
-```
-
-After linking, `devloop` is available from any terminal window.
-
-### macOS / Linux
+### From npm (recommended)
 
 ```bash
-cd /path/to/DevLoop
+npm install -g claude-devloop
+```
+
+### From source
+
+```bash
+# Clone this repo, then:
 npm install
 npm run build
 npm link
 ```
 
-You may need `sudo npm link` if you get permission errors.
+You may need `sudo npm link` (macOS/Linux) or run as Administrator (Windows) if you get permission errors.
 
 ### Verify Installation
 
@@ -52,21 +40,8 @@ devloop --help
 
 ## Uninstallation
 
-### Remove Global Link
-
-```powershell
-# Windows (run from DevLoop directory)
-npm unlink
-
-# Or remove by package name from anywhere
-npm uninstall -g devloop
-```
-
 ```bash
-# macOS / Linux
-npm unlink
-# or
-sudo npm uninstall -g devloop
+npm uninstall -g claude-devloop
 ```
 
 ### Clean Up Config Files
