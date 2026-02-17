@@ -344,7 +344,19 @@ export async function ensureGitRepo(workspace: string, verbose: boolean = false)
       console.log(chalk.gray('Git repository already exists'));
     }
     // Ensure .gitignore exists even for existing repos
-    await ensureGitignore(workspace, verbose);
+    const gitignoreChanged = await ensureGitignore(workspace, verbose);
+
+    // Auto-commit .gitignore changes so they don't trigger false "interrupted work" detection
+    if (gitignoreChanged) {
+      const gitRoot = await getGitRoot(workspace) || workspace;
+      await execGit(['add', '.gitignore'], gitRoot);
+      const commitMsg = await getDevloopCommitMessage(workspace, 'Update .gitignore');
+      const result = await execGit(['commit', '-m', commitMsg], gitRoot);
+      if (verbose && result.success) {
+        console.log(chalk.gray('Committed .gitignore updates'));
+      }
+    }
+
     return { gitAvailable: true, wasInitialized: false, initialCommit: false };
   }
 
