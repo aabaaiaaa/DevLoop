@@ -8,7 +8,6 @@ import { createSession, readSession } from '../core/session.js';
 import { createFeatureSession, readFeatureSession } from '../core/feature-session.js';
 import { spawnClaudeInteractive } from '../core/claude.js';
 import { requireClaudeInstalled } from './shared.js';
-import { generateRequirementsTemplate } from '../parser/requirements.js';
 import { detectCommitFormat } from '../core/commit-format.js';
 import { ensureGitRepo, gitCommit, saveDevloopCommitFormat, getDevloopCommitMessage } from '../core/git.js';
 
@@ -26,21 +25,36 @@ This file provides guidance to Claude Code when working in this workspace.
 ${platform === 'Windows' ? '- Use Windows-compatible commands (e.g., use backslashes in paths, no Unix-specific commands)\n' : ''}
 ## Current Task
 
-You are helping the user create a **requirements.md** file for their project.
+You are helping the user create a **requirements.md** file for their project. This happens in two phases.
 
-**IMPORTANT: Do NOT implement the project. Do NOT write code, create source files, install packages, or build anything. Your ONLY job right now is to write the requirements.md document. The actual implementation will happen later in a separate automated process.**
+**IMPORTANT: Do NOT implement the project. Do NOT write code, create source files, install packages, or build anything. Your ONLY job right now is to plan and write the requirements.md document. The actual implementation will happen later in a separate automated process.**
 
-### Your Job
+---
 
-1. Ask the user what they want to build
-2. Break down their project into small, manageable tasks (each ~30 minutes of work)
-3. Write tasks to \`requirements.md\` in the format below
-4. Ensure tasks have clear dependencies where needed
-5. Stop when the requirements document is complete — do NOT start implementing tasks
+### Phase 1 — Discovery (do NOT write any files)
 
-### Task Format
+Start by asking the user to describe their project. Explore the full scope before writing anything:
 
-Each task in requirements.md MUST follow this exact format:
+- What does the project do? Who uses it?
+- What are all the features and how do they connect?
+- What are the user flows end-to-end?
+- Any technology preferences or constraints?
+- External dependencies, APIs, or services needed?
+- What does "done" look like — what are the success criteria?
+- Are there any edge cases or failure modes to handle?
+- How should the project be tested? (unit tests, integration tests, e2e tests, specific frameworks?) — Claude will run these tests automatically during implementation to catch and fix bugs before the build is complete
+
+Once you have a clear picture, **present a proposed task list** for the user to review. Describe each task briefly (title + one-line description) and ask if anything should be added, removed, or changed. Iterate on the proposal until the user is satisfied.
+
+**Do NOT write any files during Phase 1.**
+
+---
+
+### Phase 2 — Write requirements.md (only when user confirms)
+
+When the user explicitly says the plan is complete (e.g. "looks good", "go ahead", "create the requirements"), write all tasks at once to \`${path.join(workspace, 'requirements.md')}\`.
+
+With full context of the whole plan, assign priorities and dependencies correctly:
 
 \`\`\`markdown
 ### TASK-001: Task title here
@@ -63,7 +77,6 @@ Each task in requirements.md MUST follow this exact format:
 - Priority: \`high\`, \`medium\`, or \`low\`
 - Dependencies: \`none\` or comma-separated task IDs (e.g., \`TASK-001, TASK-002\`)
 - Keep descriptions clear and actionable
-- The requirements.md file already exists at: ${path.join(workspace, 'requirements.md')}
 - **Do NOT create any files other than requirements.md** — no source code, no config files, no project scaffolding
 `;
 }
@@ -190,21 +203,36 @@ This file provides guidance to Claude Code when working in this workspace.
 ${platform === 'Windows' ? '- Use Windows-compatible commands (e.g., use backslashes in paths, no Unix-specific commands)\n' : ''}
 ## Current Task
 
-You are helping the user create a **${requirementsPath}** file for the "${featureName}" feature.
+You are helping the user create a **${requirementsPath}** file for the "${featureName}" feature. This happens in two phases.
 
-**IMPORTANT: Do NOT implement the feature. Do NOT write code, create source files, install packages, or build anything. Your ONLY job right now is to write the requirements document. The actual implementation will happen later in a separate automated process.**
+**IMPORTANT: Do NOT implement the feature. Do NOT write code, create source files, install packages, or build anything. Your ONLY job right now is to plan and write the requirements document. The actual implementation will happen later in a separate automated process.**
 
-### Your Job
+---
 
-1. Ask the user what they want to build for this feature
-2. Break down the feature into small, manageable tasks (each ~30 minutes of work)
-3. Write tasks to \`${requirementsPath}\` in the format below
-4. Ensure tasks have clear dependencies where needed
-5. Stop when the requirements document is complete — do NOT start implementing tasks
+### Phase 1 — Discovery (do NOT write any files)
 
-### Task Format
+Start by asking the user to describe what they want to build for the "${featureName}" feature. Explore the full scope before writing anything:
 
-Each task in ${requirementsPath} MUST follow this exact format:
+- What does this feature do? Who uses it?
+- What are all the sub-features and how do they connect?
+- What are the user flows end-to-end?
+- Any technology preferences or constraints?
+- External dependencies, APIs, or services needed?
+- What does "done" look like — what are the success criteria?
+- Are there any edge cases or failure modes to handle?
+- How should this feature be tested? (unit tests, integration tests, e2e tests, specific frameworks?) — Claude will run these tests automatically during implementation to catch and fix bugs before the build is complete
+
+Once you have a clear picture, **present a proposed task list** for the user to review. Describe each task briefly (title + one-line description) and ask if anything should be added, removed, or changed. Iterate on the proposal until the user is satisfied.
+
+**Do NOT write any files during Phase 1.**
+
+---
+
+### Phase 2 — Write requirements file (only when user confirms)
+
+When the user explicitly says the plan is complete (e.g. "looks good", "go ahead", "create the requirements"), write all tasks at once to \`${requirementsPath}\`.
+
+With full context of the whole plan, assign priorities and dependencies correctly:
 
 \`\`\`markdown
 ### TASK-001: Task title here
@@ -227,7 +255,6 @@ Each task in ${requirementsPath} MUST follow this exact format:
 - Priority: \`high\`, \`medium\`, or \`low\`
 - Dependencies: \`none\` or comma-separated task IDs (e.g., \`TASK-001, TASK-002\`)
 - Keep descriptions clear and actionable
-- The requirements file is at: ${requirementsPath}
 - **Do NOT create any files other than the requirements file** — no source code, no config files, no project scaffolding
 `;
 }
@@ -295,12 +322,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
         await fs.mkdir(requirementsDir, { recursive: true });
       }
 
-      // Create requirements template only if not adopting existing file
-      if (!adoptExisting && !requirementsExists) {
-        const template = generateRequirementsTemplate(featureName);
-        await fs.writeFile(requirementsPath, template, 'utf-8');
-        console.log(chalk.green(`Created: ${requirementsPath}`));
-      } else if (adoptExisting) {
+      // When adopting existing file, show it; otherwise Claude will create requirements.md during the session
+      if (adoptExisting) {
         console.log(chalk.green(`Using existing: ${requirementsPath}`));
       }
 
@@ -318,12 +341,13 @@ export async function initCommand(options: InitOptions): Promise<void> {
       const commitConfig = await detectAndConfigureCommitFormat(workspace, initAction);
 
       console.log(chalk.yellow.bold('\n--- Tips ---'));
-      console.log(chalk.yellow('  Claude will ask to overwrite the requirements file — say yes (the placeholder is just a template).'));
-      console.log(chalk.yellow('  Describe what you want to build. Include any preferences for technologies or approaches.'));
-      console.log(chalk.yellow('  Do NOT ask Claude to build the feature — this session is only for planning.'));
-      console.log(chalk.yellow('  If Claude starts writing code or creating files, remind it to just write the requirements doc.'));
-      console.log(chalk.yellow('  Review the tasks before exiting. Ask Claude to adjust priorities or split large tasks.'));
-      console.log(chalk.yellow('  Exit with Ctrl+C or /exit when you\'re happy with the plan.'));
+      console.log(chalk.yellow('  Claude will guide you through a planning discussion — answer its questions fully.'));
+      console.log(chalk.yellow('  Don\'t rush to finalize — take time to explore all aspects of the feature and edge cases.'));
+      console.log(chalk.yellow('  Discuss testing: how you\'d like the feature tested (unit/integration/e2e, frameworks, etc.).'));
+      console.log(chalk.yellow('  Claude will run those tests automatically during implementation to catch bugs before finishing.'));
+      console.log(chalk.yellow('  Once you\'re happy with the plan, tell Claude to create the requirements document.'));
+      console.log(chalk.yellow('  Only after requirements are created can you run "devloop run".'));
+      console.log(chalk.yellow('  Exit with Ctrl+C or /exit when you\'re done.'));
       console.log(chalk.yellow(`  Implementation happens later with "devloop run --feature ${featureName}".`));
       console.log(chalk.yellow('------------\n'));
 
@@ -397,12 +421,8 @@ export async function initCommand(options: InitOptions): Promise<void> {
     // If --force is used, we'll overwrite below
   }
 
-  // Create requirements template only if not adopting existing file
-  if (!adoptExisting) {
-    const template = generateRequirementsTemplate('My Project');
-    await fs.writeFile(requirementsPath, template, 'utf-8');
-    console.log(chalk.green(`Created: ${requirementsPath}`));
-  } else {
+  // When adopting existing file, show it; otherwise Claude will create requirements.md during the session
+  if (adoptExisting) {
     console.log(chalk.green(`Using existing: ${requirementsPath}`));
   }
 
@@ -420,12 +440,13 @@ export async function initCommand(options: InitOptions): Promise<void> {
   const commitConfig = await detectAndConfigureCommitFormat(workspace, initAction);
 
   console.log(chalk.yellow.bold('\n--- Tips ---'));
-  console.log(chalk.yellow('  Claude will ask to overwrite requirements.md — say yes (the placeholder is just a template).'));
-  console.log(chalk.yellow('  Describe what you want to build. Include any preferences for technologies or approaches.'));
-  console.log(chalk.yellow('  Do NOT ask Claude to build the project — this session is only for planning.'));
-  console.log(chalk.yellow('  If Claude starts writing code or creating files, remind it to just write the requirements doc.'));
-  console.log(chalk.yellow('  Review the tasks before exiting. Ask Claude to adjust priorities or split large tasks.'));
-  console.log(chalk.yellow('  Exit with Ctrl+C or /exit when you\'re happy with the plan.'));
+  console.log(chalk.yellow('  Claude will guide you through a planning discussion — answer its questions fully.'));
+  console.log(chalk.yellow('  Don\'t rush to finalize — take time to explore all features and edge cases.'));
+  console.log(chalk.yellow('  Discuss testing: how you\'d like the project tested (unit/integration/e2e, frameworks, etc.).'));
+  console.log(chalk.yellow('  Claude will run those tests automatically during implementation to catch bugs before finishing.'));
+  console.log(chalk.yellow('  Once you\'re happy with the plan, tell Claude to create the requirements document.'));
+  console.log(chalk.yellow('  Only after requirements are created can you run "devloop run".'));
+  console.log(chalk.yellow('  Exit with Ctrl+C or /exit when you\'re done.'));
   console.log(chalk.yellow('  Implementation happens later with "devloop run".'));
   console.log(chalk.yellow('------------\n'));
 

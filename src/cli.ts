@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { createRequire } from 'module';
 import { initCommand } from './commands/init.js';
 import { continueCommand } from './commands/continue.js';
 import { runCommand } from './commands/run.js';
@@ -7,12 +8,15 @@ import { workspaceCommand } from './commands/workspace.js';
 import { featureListCommand, featureStatusCommand } from './commands/feature.js';
 import { configSetCommand, configGetCommand, configUnsetCommand, configListCommand } from './commands/config.js';
 
+const require = createRequire(import.meta.url);
+const { version } = require('../package.json');
+
 const program = new Command();
 
 program
   .name('devloop')
   .description('Automate iterative development with Claude Code')
-  .version('1.0.0');
+  .version(version);
 
 program
   .command('init')
