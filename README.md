@@ -2,7 +2,15 @@
 
 Automate iterative development with Claude Code. DevLoop helps you break down projects into small tasks and automatically executes them in a loop using Claude.
 
-![DevLoop in action](images/example-devloop-usage.png)
+![DevLoop in action](https://raw.githubusercontent.com/aabaaiaaa/DevLoop/master/images/example-devloop-usage.png)
+
+## Why DevLoop?
+
+DevLoop lets you build projects of any size in a fully unattended way — start a run before bed and wake up to a completed project. The scope of what it can build is limited only by the quality and detail of your `requirements.md`. Because each task runs in a fresh Claude context, there's no context window degradation over long runs.
+
+> **Warning:** DevLoop runs Claude Code with `--dangerously-skip-permissions`, which allows Claude to execute commands, write files, and make changes without prompting for confirmation. This is required for unattended operation but means Claude has broad access to your system.
+>
+> **Mitigation:** DevLoop uses `--add-dir <workspace>` to restrict Claude's file operations to your workspace directory, and generates a `.claude/settings.json` with permission rules that block dangerous commands. However, these are guardrails, not a sandbox. Review your `requirements.md` carefully before starting a long unattended run, and consider running in a VM or container for additional isolation.
 
 ## How It Works
 
