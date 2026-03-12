@@ -39,11 +39,19 @@ export interface Progress {
   iterations: IterationLog[];
 }
 
+export interface ActiveTask {
+  taskId: string;
+  taskTitle: string;
+  iterationNumber: number;
+  startedAt: string;
+}
+
 export interface Session {
   phase: SessionPhase;
   sessionId: string | null;
   lastIteration: number;
   startedAt: string;
+  activeTask?: ActiveTask | null;
 }
 
 export interface GlobalConfig {
@@ -89,6 +97,8 @@ export interface ClaudeResult {
   duration: number;
   sessionId?: string;
   tokenUsage?: TokenUsage;
+  exitCode?: number | null;
+  signal?: string | null;
 }
 
 // Re-export feature types

@@ -308,7 +308,7 @@ export async function invokeClaudeAutomated(
       }
     });
 
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       // Clean up temp file
       try {
         fsSync.unlinkSync(promptFile);
@@ -341,7 +341,13 @@ export async function invokeClaudeAutomated(
         if (resultText && resultText.includes('API Error')) {
           parts.push(resultText);
         }
-        errorMessage = parts.join('\n') || 'Unknown error';
+        // Include exit code/signal info
+        if (signal) {
+          parts.push(`Killed by signal: ${signal}`);
+        } else if (code !== null && code !== undefined) {
+          parts.push(`Exit code: ${code}`);
+        }
+        errorMessage = parts.join('\n') || 'Unknown error (no exit code, no signal, no stderr)';
       }
       const errorType = hasError ? classifyError(errorMessage || stderr || '', null) : undefined;
 
@@ -351,7 +357,9 @@ export async function invokeClaudeAutomated(
         error: errorMessage,
         errorType,
         duration,
-        tokenUsage
+        tokenUsage,
+        exitCode: code,
+        signal: signal ?? null
       });
     });
 

@@ -1,12 +1,16 @@
 import ora, { Ora } from 'ora';
 import chalk from 'chalk';
-import { DevLoopConfig, IterationLog } from '../types/index.js';
+import * as fsSync from 'fs';
+import * as path from 'path';
+import { DevLoopConfig, IterationLog, ActiveTask } from '../types/index.js';
 import { parseRequirements, getNextTask, updateTaskStatus } from '../parser/requirements.js';
 import { readProgress, appendIteration, generateProgressContent, getCompletedTaskIds } from '../parser/progress.js';
 import { invokeClaudeAutomated, buildTaskPrompt, isApiError } from './claude.js';
-import { createSession, updateSessionPhase, updateSessionIteration } from './session.js';
-import { createFeatureSession, updateFeatureSessionIteration } from './feature-session.js';
+import { createSession, readSession, writeSession, updateSessionPhase, updateSessionIteration } from './session.js';
+import { createFeatureSession, readFeatureSession, writeFeatureSession, updateFeatureSessionIteration } from './feature-session.js';
 import { commitIteration, commitInterruptedWork, ensureGitRepo, getUncommittedChanges } from './git.js';
+import { createLogger, Logger } from './logger.js';
+import { promptUser } from '../commands/shared.js';
 import * as fs from 'fs/promises';
 
 // Graceful shutdown state
@@ -116,9 +120,122 @@ function setupGracefulShutdown(): () => void {
   };
 }
 
+/**
+ * Write an active task marker to the session file.
+ * Used to detect crashes on next run.
+ */
+async function setActiveTask(
+  workspacePath: string,
+  featureName: string | undefined,
+  activeTask: ActiveTask | null
+): Promise<void> {
+  try {
+    if (featureName) {
+      const session = await readFeatureSession(workspacePath, featureName);
+      if (session) {
+        session.activeTask = activeTask;
+        await writeFeatureSession(workspacePath, session);
+      }
+    } else {
+      const session = await readSession(workspacePath);
+      if (session) {
+        session.activeTask = activeTask;
+        await writeSession(workspacePath, session);
+      }
+    }
+  } catch {
+    // Best-effort — don't let marker writes break the loop
+  }
+}
+
+/**
+ * Read active task marker from session. Returns null if no crash marker.
+ */
+async function getActiveTask(
+  workspacePath: string,
+  featureName: string | undefined
+): Promise<ActiveTask | null> {
+  try {
+    if (featureName) {
+      const session = await readFeatureSession(workspacePath, featureName);
+      return session?.activeTask ?? null;
+    } else {
+      const session = await readSession(workspacePath);
+      return session?.activeTask ?? null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the last N lines from the debug log.
+ */
+function readDebugLogTail(workspacePath: string, lines: number = 20): string[] {
+  try {
+    const logPath = path.join(workspacePath, '.devloop', 'debug.log');
+    if (!fsSync.existsSync(logPath)) return [];
+    const content = fsSync.readFileSync(logPath, 'utf-8');
+    const allLines = content.split('\n').filter(l => l.trim());
+    return allLines.slice(-lines);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Check for crash marker from a previous run and prompt the user.
+ * Returns true if we should continue, false if user wants to exit.
+ */
+async function checkCrashMarker(
+  config: DevLoopConfig,
+  logger: Logger
+): Promise<boolean> {
+  const activeTask = await getActiveTask(config.workspacePath, config.featureName);
+  if (!activeTask) return true;
+
+  logger.info(`Crash marker detected: ${activeTask.taskId} (iteration ${activeTask.iterationNumber})`);
+
+  console.log(chalk.red.bold('\n⚠ Previous run crashed!\n'));
+  console.log(chalk.red(`  Task: ${activeTask.taskId} - ${activeTask.taskTitle}`));
+  console.log(chalk.red(`  Iteration: ${activeTask.iterationNumber}`));
+  console.log(chalk.red(`  Started at: ${activeTask.startedAt}`));
+
+  // Show recent debug log
+  const logLines = readDebugLogTail(config.workspacePath, 20);
+  if (logLines.length > 0) {
+    console.log(chalk.gray('\n  Recent debug log:'));
+    for (const line of logLines) {
+      console.log(chalk.gray(`    ${line}`));
+    }
+  }
+
+  console.log();
+  const shouldContinue = await promptUser(chalk.cyan('Previous run crashed. Continue? (Y/n): '));
+
+  if (!shouldContinue) {
+    console.log(chalk.yellow('Exiting. Inspect the workspace and fix any issues before running again.'));
+    return false;
+  }
+
+  // Clear the crash marker
+  await setActiveTask(config.workspacePath, config.featureName, null);
+  return true;
+}
+
 export async function runLoop(config: DevLoopConfig): Promise<void> {
   const spinner = ora();
   const cleanupShutdownHandler = setupGracefulShutdown();
+  const logger = createLogger(config.workspacePath);
+
+  logger.info(`Loop starting: maxIterations=${config.maxIterations}, workspace=${config.workspacePath}${config.featureName ? `, feature=${config.featureName}` : ''}`);
+
+  // Check for crash marker from previous run (before any changes to workspace)
+  const shouldContinue = await checkCrashMarker(config, logger);
+  if (!shouldContinue) {
+    cleanupShutdownHandler();
+    return;
+  }
 
   // Set initial terminal title
   const featurePrefix = config.featureName ? `[${config.featureName}] ` : '';
@@ -342,6 +459,8 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
     const completedTasks = doneTasks.length;
     setTerminalTitle(`DevLoop: ${featurePrefix}${i}/${config.maxIterations} - ${nextTask.id} (${completedTasks}/${totalTasks} done)`);
 
+    logger.info(`Iteration ${i}: Starting ${nextTask.id} - ${nextTask.title}`);
+
     console.log(chalk.cyan(`\nIteration ${i}: ${nextTask.id} - ${nextTask.title}`));
     console.log(chalk.gray(`  Priority: ${nextTask.priority}`));
     console.log(chalk.gray(`  Description: ${nextTask.description}`));
@@ -367,178 +486,251 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
     // Build prompt and invoke Claude with timed spinner
     const taskStartTime = Date.now();
     const currentTitle = `DevLoop: ${i}/${config.maxIterations} - ${nextTask.id} (${completedTasks}/${totalTasks} done)`;
-    const spinnerState = startTimedSpinner(
-      spinner,
-      `  Claude working on ${nextTask.id}`,
-      taskStartTime,
-      config.verbose,
-      currentTitle
-    );
+    let spinnerState: SpinnerState | null = null;
 
-    const prompt = buildTaskPrompt(nextTask, config.requirementsPath, config.progressPath, config.workspacePath);
-    const result = await invokeClaudeAutomated(prompt, config.workspacePath, {
-      verbose: config.verbose,
-      onProgress: (activity) => {
-        updateSpinnerActivity(spinnerState, activity);
+    try {
+      // Set crash marker before invoking Claude
+      await setActiveTask(config.workspacePath, config.featureName, {
+        taskId: nextTask.id,
+        taskTitle: nextTask.title,
+        iterationNumber: i,
+        startedAt: new Date().toISOString()
+      });
+
+      spinnerState = startTimedSpinner(
+        spinner,
+        `  Claude working on ${nextTask.id}`,
+        taskStartTime,
+        config.verbose,
+        currentTitle
+      );
+
+      const prompt = buildTaskPrompt(nextTask, config.requirementsPath, config.progressPath, config.workspacePath);
+      const result = await invokeClaudeAutomated(prompt, config.workspacePath, {
+        verbose: config.verbose,
+        onProgress: (activity) => {
+          updateSpinnerActivity(spinnerState!, activity);
+        }
+      });
+
+      // Stop the spinner interval
+      if (spinnerState.interval) {
+        clearInterval(spinnerState.interval);
       }
-    });
 
-    // Stop the spinner interval
-    if (spinnerState.interval) {
-      clearInterval(spinnerState.interval);
-    }
+      logger.info(`Iteration ${i}: Claude finished - success=${result.success}, exitCode=${result.exitCode}, signal=${result.signal}, duration=${result.duration}ms`);
+      if (!result.success) {
+        logger.error(`Iteration ${i}: ${result.errorType} - ${result.error}`);
+      }
 
-    // Check if stop was requested during task execution
-    // If so, treat as interrupted - do NOT mark as complete even if Claude exited cleanly
-    if (stopRequested) {
-      if (config.verbose) {
-        console.log(chalk.yellow(`  ⚠ Task interrupted by user request`));
-      } else {
-        spinner.warn(chalk.yellow(`  Task ${nextTask.id} interrupted by user request`));
+      // Check if stop was requested during task execution
+      // If so, treat as interrupted - do NOT mark as complete even if Claude exited cleanly
+      if (stopRequested) {
+        if (config.verbose) {
+          console.log(chalk.yellow(`  ⚠ Task interrupted by user request`));
+        } else {
+          spinner.warn(chalk.yellow(`  Task ${nextTask.id} interrupted by user request`));
+        }
+
+        const duration = `${Math.round(result.duration / 1000)}s`;
+
+        // Record as interrupted - task was NOT completed
+        const iterationLog: IterationLog = {
+          iteration: i,
+          timestamp: iterationStart.toISOString(),
+          taskCompleted: null,  // NOT completed
+          summary: `Interrupted: ${nextTask.title} (user requested stop)`,
+          duration,
+          exitStatus: 'interrupted',
+          tokenUsage: result.tokenUsage
+        };
+
+        await appendIteration(config.progressPath, requirements.tasks.length, iterationLog);
+
+        // Update session iteration count
+        if (config.featureName) {
+          await updateFeatureSessionIteration(config.workspacePath, config.featureName, i);
+        } else {
+          await updateSessionIteration(config.workspacePath, i);
+        }
+
+        // Commit the interrupted state (if any changes were made)
+        await commitIteration(
+          config.workspacePath,
+          i,
+          null,  // No task completed
+          null,
+          false, // Not successful
+          config.verbose,
+          config.featureName
+        );
+
+        logger.info(`Iteration ${i}: Interrupted by user request`);
+
+        console.log(chalk.yellow('\nStopping as requested. Task was NOT marked as complete.'));
+        console.log(chalk.gray('Run "devloop continue" to resume and retry this task.'));
+        interruptedDuringTask = true;
+
+        // Clear crash marker before breaking
+        await setActiveTask(config.workspacePath, config.featureName, null);
+        break;
+      }
+
+      // Update token tracking (both session and project)
+      if (result.tokenUsage) {
+        sessionTokens.input += result.tokenUsage.inputTokens;
+        sessionTokens.output += result.tokenUsage.outputTokens;
+        sessionTokens.cacheWrite += result.tokenUsage.cacheCreationTokens;
+        sessionTokens.cacheRead += result.tokenUsage.cacheReadTokens;
+        sessionTokens.total += result.tokenUsage.totalTokens;
+        sessionCost += result.tokenUsage.costUsd;
+
+        projectTokens.input += result.tokenUsage.inputTokens;
+        projectTokens.output += result.tokenUsage.outputTokens;
+        projectTokens.cacheWrite += result.tokenUsage.cacheCreationTokens;
+        projectTokens.cacheRead += result.tokenUsage.cacheReadTokens;
+        projectTokens.total += result.tokenUsage.totalTokens;
+        projectCost += result.tokenUsage.costUsd;
       }
 
       const duration = `${Math.round(result.duration / 1000)}s`;
 
-      // Record as interrupted - task was NOT completed
+      // Record iteration with error details and token usage
       const iterationLog: IterationLog = {
         iteration: i,
         timestamp: iterationStart.toISOString(),
-        taskCompleted: null,  // NOT completed
-        summary: `Interrupted: ${nextTask.title} (user requested stop)`,
+        taskCompleted: result.success ? nextTask.id : null,
+        summary: result.success
+          ? `Completed ${nextTask.title}`
+          : `Failed: ${result.error?.split('\n')[0] || 'Unknown error'}`,
         duration,
-        exitStatus: 'interrupted',
+        exitStatus: result.success ? 'success' : 'error',
+        errorType: result.success ? undefined : result.errorType,
+        errorDetail: result.success ? undefined : result.error,
         tokenUsage: result.tokenUsage
       };
 
+      // Update progress file
       await appendIteration(config.progressPath, requirements.tasks.length, iterationLog);
 
-      // Update session iteration count
+      // Update session (feature or legacy)
       if (config.featureName) {
         await updateFeatureSessionIteration(config.workspacePath, config.featureName, i);
       } else {
         await updateSessionIteration(config.workspacePath, i);
       }
 
-      // Commit the interrupted state (if any changes were made)
-      await commitIteration(
+      if (result.success) {
+        const tokenInfo = result.tokenUsage
+          ? ` [${result.tokenUsage.totalTokens.toLocaleString()} tokens]`
+          : '';
+        if (config.verbose) {
+          console.log(chalk.green(`  ✓ Completed ${nextTask.id} (${duration})${tokenInfo}`));
+        } else {
+          spinner.succeed(chalk.green(`  Completed ${nextTask.id} (${duration})${tokenInfo}`));
+        }
+        // Show detailed token usage breakdown
+        if (result.tokenUsage) {
+          const t = result.tokenUsage;
+          console.log(chalk.gray(`    This iteration: ${t.totalTokens.toLocaleString()} tokens ($${t.costUsd.toFixed(4)}, ~$${pricePerMillion(t.costUsd, t.totalTokens)}/M)`));
+          console.log(chalk.gray(`      In: ${t.inputTokens.toLocaleString()} | Out: ${t.outputTokens.toLocaleString()} | Cache +${t.cacheCreationTokens.toLocaleString()}/-${t.cacheReadTokens.toLocaleString()}`));
+          console.log(chalk.gray(`    Session: ${sessionTokens.total.toLocaleString()} tokens ($${sessionCost.toFixed(4)}, ~$${pricePerMillion(sessionCost, sessionTokens.total)}/M)`));
+          console.log(chalk.gray(`    Project: ${projectTokens.total.toLocaleString()} tokens ($${projectCost.toFixed(4)}, ~$${pricePerMillion(projectCost, projectTokens.total)}/M)`));
+        }
+      } else {
+        if (config.verbose) {
+          console.log(chalk.red(`  ✗ Failed ${nextTask.id} - ${result.error}`));
+        } else {
+          spinner.fail(chalk.red(`  Failed ${nextTask.id} - ${result.error}`));
+        }
+
+        // Check if this is an API error (not a task failure)
+        if (isApiError(result.errorType)) {
+          logger.error(`API error detected, stopping loop: ${result.errorType} - ${result.error}`);
+          console.log(chalk.red.bold('\n⚠ API Error Detected - Stopping DevLoop\n'));
+          console.log(chalk.red(`  Error Type: ${result.errorType}`));
+          console.log(chalk.red(`  Details: ${result.error}`));
+          console.log(chalk.yellow('\n  This is an API-level error, not a task failure.'));
+          console.log(chalk.yellow('  Please resolve the issue before continuing.\n'));
+
+          // Clear crash marker before breaking
+          await setActiveTask(config.workspacePath, config.featureName, null);
+          break;
+        }
+
+        // Task failure - continue to next iteration (future attempt may succeed)
+        console.log(chalk.yellow('  Continuing to next task...'));
+      }
+
+      // Mark task as done in requirements.md (DevLoop owns status, not Claude)
+      if (result.success) {
+        await updateTaskStatus(config.requirementsPath, nextTask.id, 'done');
+      }
+
+      // Commit iteration changes to git (if available)
+      const commitResult = await commitIteration(
         config.workspacePath,
         i,
-        null,  // No task completed
-        null,
-        false, // Not successful
+        result.success ? nextTask.id : null,
+        result.success ? nextTask.title : null,
+        result.success,
         config.verbose,
         config.featureName
       );
 
-      console.log(chalk.yellow('\nStopping as requested. Task was NOT marked as complete.'));
-      console.log(chalk.gray('Run "devloop continue" to resume and retry this task.'));
-      interruptedDuringTask = true;
-      break;
-    }
+      // Stop loop if commit failed due to a hook
+      if (commitResult.hookFailure) {
+        console.log(chalk.yellow('\nStopping DevLoop due to commit hook failure.'));
+        console.log(chalk.gray('Fix the commit message format and run "devloop run" again.'));
 
-    // Update token tracking (both session and project)
-    if (result.tokenUsage) {
-      sessionTokens.input += result.tokenUsage.inputTokens;
-      sessionTokens.output += result.tokenUsage.outputTokens;
-      sessionTokens.cacheWrite += result.tokenUsage.cacheCreationTokens;
-      sessionTokens.cacheRead += result.tokenUsage.cacheReadTokens;
-      sessionTokens.total += result.tokenUsage.totalTokens;
-      sessionCost += result.tokenUsage.costUsd;
-
-      projectTokens.input += result.tokenUsage.inputTokens;
-      projectTokens.output += result.tokenUsage.outputTokens;
-      projectTokens.cacheWrite += result.tokenUsage.cacheCreationTokens;
-      projectTokens.cacheRead += result.tokenUsage.cacheReadTokens;
-      projectTokens.total += result.tokenUsage.totalTokens;
-      projectCost += result.tokenUsage.costUsd;
-    }
-
-    const duration = `${Math.round(result.duration / 1000)}s`;
-
-    // Record iteration with error details and token usage
-    const iterationLog: IterationLog = {
-      iteration: i,
-      timestamp: iterationStart.toISOString(),
-      taskCompleted: result.success ? nextTask.id : null,
-      summary: result.success
-        ? `Completed ${nextTask.title}`
-        : `Failed: ${result.error?.split('\n')[0] || 'Unknown error'}`,
-      duration,
-      exitStatus: result.success ? 'success' : 'error',
-      errorType: result.success ? undefined : result.errorType,
-      errorDetail: result.success ? undefined : result.error,
-      tokenUsage: result.tokenUsage
-    };
-
-    // Update progress file
-    await appendIteration(config.progressPath, requirements.tasks.length, iterationLog);
-
-    // Update session (feature or legacy)
-    if (config.featureName) {
-      await updateFeatureSessionIteration(config.workspacePath, config.featureName, i);
-    } else {
-      await updateSessionIteration(config.workspacePath, i);
-    }
-
-    if (result.success) {
-      const tokenInfo = result.tokenUsage
-        ? ` [${result.tokenUsage.totalTokens.toLocaleString()} tokens]`
-        : '';
-      if (config.verbose) {
-        console.log(chalk.green(`  ✓ Completed ${nextTask.id} (${duration})${tokenInfo}`));
-      } else {
-        spinner.succeed(chalk.green(`  Completed ${nextTask.id} (${duration})${tokenInfo}`));
-      }
-      // Show detailed token usage breakdown
-      if (result.tokenUsage) {
-        const t = result.tokenUsage;
-        console.log(chalk.gray(`    This iteration: ${t.totalTokens.toLocaleString()} tokens ($${t.costUsd.toFixed(4)}, ~$${pricePerMillion(t.costUsd, t.totalTokens)}/M)`));
-        console.log(chalk.gray(`      In: ${t.inputTokens.toLocaleString()} | Out: ${t.outputTokens.toLocaleString()} | Cache +${t.cacheCreationTokens.toLocaleString()}/-${t.cacheReadTokens.toLocaleString()}`));
-        console.log(chalk.gray(`    Session: ${sessionTokens.total.toLocaleString()} tokens ($${sessionCost.toFixed(4)}, ~$${pricePerMillion(sessionCost, sessionTokens.total)}/M)`));
-        console.log(chalk.gray(`    Project: ${projectTokens.total.toLocaleString()} tokens ($${projectCost.toFixed(4)}, ~$${pricePerMillion(projectCost, projectTokens.total)}/M)`));
-      }
-    } else {
-      if (config.verbose) {
-        console.log(chalk.red(`  ✗ Failed ${nextTask.id} - ${result.error}`));
-      } else {
-        spinner.fail(chalk.red(`  Failed ${nextTask.id} - ${result.error}`));
-      }
-
-      // Check if this is an API error (not a task failure)
-      if (isApiError(result.errorType)) {
-        console.log(chalk.red.bold('\n⚠ API Error Detected - Stopping DevLoop\n'));
-        console.log(chalk.red(`  Error Type: ${result.errorType}`));
-        console.log(chalk.red(`  Details: ${result.error}`));
-        console.log(chalk.yellow('\n  This is an API-level error, not a task failure.'));
-        console.log(chalk.yellow('  Please resolve the issue before continuing.\n'));
+        // Clear crash marker before breaking
+        await setActiveTask(config.workspacePath, config.featureName, null);
         break;
       }
 
-      // Task failure - continue to next iteration (future attempt may succeed)
-      console.log(chalk.yellow('  Continuing to next task...'));
-    }
+      // Clear crash marker after successful iteration completion
+      await setActiveTask(config.workspacePath, config.featureName, null);
 
-    // Mark task as done in requirements.md (DevLoop owns status, not Claude)
-    if (result.success) {
-      await updateTaskStatus(config.requirementsPath, nextTask.id, 'done');
-    }
+    } catch (iterationError) {
+      // Stop spinner if still running
+      if (spinnerState?.interval) {
+        clearInterval(spinnerState.interval);
+      }
+      spinner.stop();
 
-    // Commit iteration changes to git (if available)
-    const commitResult = await commitIteration(
-      config.workspacePath,
-      i,
-      result.success ? nextTask.id : null,
-      result.success ? nextTask.title : null,
-      result.success,
-      config.verbose,
-      config.featureName
-    );
+      logger.error(`Iteration ${i}: Unhandled exception`, iterationError);
 
-    // Stop loop if commit failed due to a hook
-    if (commitResult.hookFailure) {
-      console.log(chalk.yellow('\nStopping DevLoop due to commit hook failure.'));
-      console.log(chalk.gray('Fix the commit message format and run "devloop run" again.'));
-      break;
+      const errorMessage = iterationError instanceof Error
+        ? iterationError.message
+        : String(iterationError);
+
+      console.log(chalk.red.bold(`\n  ⚠ Iteration ${i} crashed: ${errorMessage}`));
+
+      // Record crash in progress.md
+      try {
+        const crashLog: IterationLog = {
+          iteration: i,
+          timestamp: iterationStart.toISOString(),
+          taskCompleted: null,
+          summary: `Crashed: ${errorMessage}`,
+          duration: `${Math.round((Date.now() - taskStartTime) / 1000)}s`,
+          exitStatus: 'error',
+          errorType: 'unknown',
+          errorDetail: iterationError instanceof Error ? iterationError.stack : String(iterationError)
+        };
+
+        if (requirements) {
+          await appendIteration(config.progressPath, requirements.tasks.length, crashLog);
+        }
+      } catch {
+        logger.error('Failed to record crash in progress.md');
+      }
+
+      // Clear crash marker so next run doesn't show stale info
+      await setActiveTask(config.workspacePath, config.featureName, null);
+
+      console.log(chalk.yellow('  Continuing to next iteration...'));
+      continue;
     }
 
     // Small delay between iterations to avoid rate limiting
@@ -547,6 +739,8 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
 
   // Clean up signal handler
   cleanupShutdownHandler();
+
+  logger.info('Loop complete');
 
   // Final summary
   console.log(chalk.blue.bold('\n=== DevLoop Complete ===\n'));

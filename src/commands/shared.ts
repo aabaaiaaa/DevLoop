@@ -1,7 +1,25 @@
+import * as readline from 'readline';
 import chalk from 'chalk';
 import { checkClaudeInstalled } from '../core/claude.js';
 import { getRequirementsPath, getProgressPath } from '../core/config.js';
 import { DevLoopConfig } from '../types/index.js';
+
+/**
+ * Prompt user with a yes/no question. Returns true for y/yes/empty (default yes).
+ */
+export async function promptUser(question: string): Promise<boolean> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes' || answer === '');
+    });
+  });
+}
 
 /**
  * Check if Claude CLI is installed, exit with error if not.

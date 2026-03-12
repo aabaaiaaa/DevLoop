@@ -57,7 +57,10 @@ export async function runCommand(options: RunOptions): Promise<void> {
       try {
         await runLoop(config);
       } catch (error) {
-        console.log(chalk.red(`\nFatal error: ${error}`));
+        const message = error instanceof Error
+          ? `${error.message}\n${error.stack}`
+          : String(error);
+        console.log(chalk.red(`\nFatal error: ${message}`));
         process.exit(1);
       }
 
@@ -91,7 +94,10 @@ export async function runCommand(options: RunOptions): Promise<void> {
   try {
     await runLoop(config);
   } catch (error) {
-    console.log(chalk.red(`\nFatal error: ${error}`));
+    const message = error instanceof Error
+          ? `${error.message}\n${error.stack}`
+          : String(error);
+        console.log(chalk.red(`\nFatal error: ${message}`));
     process.exit(1);
   }
 }

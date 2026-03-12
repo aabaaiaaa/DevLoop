@@ -1,4 +1,4 @@
-import { SessionPhase } from './index.js';
+import { SessionPhase, ActiveTask } from './index.js';
 
 export interface FeatureSession {
   feature: string;
@@ -8,6 +8,7 @@ export interface FeatureSession {
   startedAt: string;
   requirementsPath: string;
   progressPath: string;
+  activeTask?: ActiveTask | null;
 }
 
 export interface WorkspaceConfig {

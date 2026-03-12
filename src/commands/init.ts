@@ -7,7 +7,7 @@ import { resolveWorkspace, getRequirementsPath, resolveFeaturePath, readWorkspac
 import { createSession, readSession } from '../core/session.js';
 import { createFeatureSession, readFeatureSession } from '../core/feature-session.js';
 import { spawnClaudeInteractive } from '../core/claude.js';
-import { requireClaudeInstalled } from './shared.js';
+import { requireClaudeInstalled, promptUser } from './shared.js';
 import { detectCommitFormat } from '../core/commit-format.js';
 import { ensureGitRepo, gitCommit, saveDevloopCommitFormat, getDevloopCommitMessage } from '../core/git.js';
 
@@ -85,20 +85,6 @@ interface InitOptions {
   workspace?: string;
   feature?: string;
   force?: boolean;
-}
-
-async function promptUser(question: string): Promise<boolean> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
-  });
-
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes' || answer === '');
-    });
-  });
 }
 
 /**
