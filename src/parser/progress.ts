@@ -135,6 +135,16 @@ export async function writeProgress(filePath: string, progress: Progress): Promi
   await fs.writeFile(filePath, content, 'utf-8');
 }
 
+export function getCompletedTaskIds(progress: Progress): Set<string> {
+  const ids = new Set<string>();
+  for (const iter of progress.iterations) {
+    if (iter.taskCompleted) {
+      ids.add(iter.taskCompleted);
+    }
+  }
+  return ids;
+}
+
 export async function appendIteration(
   filePath: string,
   totalTasks: number,

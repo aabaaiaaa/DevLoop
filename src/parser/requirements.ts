@@ -113,6 +113,39 @@ export function getNextTask(requirements: Requirements): Task | null {
   return null;
 }
 
+export async function updateTaskStatus(
+  filePath: string,
+  taskId: string,
+  newStatus: TaskStatus
+): Promise<void> {
+  const content = await fs.readFile(filePath, 'utf-8');
+  const lines = content.split('\n');
+
+  const taskHeaderRegex = new RegExp(`^### ${taskId}:`);
+  let foundTask = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (taskHeaderRegex.test(lines[i])) {
+      foundTask = true;
+      continue;
+    }
+    if (foundTask) {
+      // If we hit another task header, stop searching
+      if (TASK_REGEX.test(lines[i])) break;
+
+      const statusMatch = lines[i].match(STATUS_REGEX);
+      if (statusMatch) {
+        lines[i] = lines[i].replace(
+          /\*\*Status\*\*:\s*(pending|in-progress|done)/i,
+          `**Status**: ${newStatus}`
+        );
+        await fs.writeFile(filePath, lines.join('\n'), 'utf-8');
+        return;
+      }
+    }
+  }
+}
+
 export function generateRequirementsTemplate(projectName: string): string {
   const today = new Date().toISOString().split('T')[0];
   return `# Project Requirements

@@ -422,14 +422,14 @@ YOUR CURRENT TASK:
 INSTRUCTIONS:
 1. Complete the task described above
 2. Make all necessary code changes WITHIN THE WORKSPACE ONLY
-3. After completing the task, update the requirements file to mark task ${task.id} as "done" by changing its Status line from "pending" to "done"
-4. Do NOT work on any other tasks
+3. Do NOT work on any other tasks
+4. Do NOT modify task statuses in the requirements file — DevLoop will update the status automatically
 
 IMPORTANT:
 - Focus only on this specific task
 - Make clean, well-documented changes
 - If you encounter blockers, document them but still attempt the task
-- Update the task status to "done" when complete
+- Do NOT change any Status lines in the requirements file
 - NEVER modify files outside ${workspacePath}
 
 Begin working on ${task.id} now.`;

@@ -1,8 +1,8 @@
 import ora, { Ora } from 'ora';
 import chalk from 'chalk';
 import { DevLoopConfig, IterationLog } from '../types/index.js';
-import { parseRequirements, getNextTask } from '../parser/requirements.js';
-import { readProgress, appendIteration, generateProgressContent } from '../parser/progress.js';
+import { parseRequirements, getNextTask, updateTaskStatus } from '../parser/requirements.js';
+import { readProgress, appendIteration, generateProgressContent, getCompletedTaskIds } from '../parser/progress.js';
 import { invokeClaudeAutomated, buildTaskPrompt, isApiError } from './claude.js';
 import { createSession, updateSessionPhase, updateSessionIteration } from './session.js';
 import { createFeatureSession, updateFeatureSessionIteration } from './feature-session.js';
@@ -232,6 +232,25 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
       console.log(chalk.gray(`Project cost: $${projectCost.toFixed(4)} (~$${pricePerMillion(projectCost, projectTokens.total)}/M)`));
     }
     console.log();
+  }
+
+  // Cross-reference requirements.md against progress.md to detect
+  // tasks falsely marked done (e.g. Claude edited status before interruption)
+  {
+    const progress = await readProgress(config.progressPath);
+    const completedIds = progress ? getCompletedTaskIds(progress) : new Set<string>();
+    const preReqs = await parseRequirements(config.requirementsPath);
+    let reverted = 0;
+    for (const task of preReqs.tasks) {
+      if (task.status === 'done' && !completedIds.has(task.id)) {
+        await updateTaskStatus(config.requirementsPath, task.id, 'pending');
+        console.log(chalk.yellow(`  Reverted ${task.id} to pending (marked done but no completion log)`));
+        reverted++;
+      }
+    }
+    if (reverted > 0) {
+      console.log(chalk.yellow(`  Reverted ${reverted} task(s) with no matching progress entry.\n`));
+    }
   }
 
   for (let i = startIteration; i <= endIteration; i++) {
@@ -497,6 +516,11 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
 
       // Task failure - continue to next iteration (future attempt may succeed)
       console.log(chalk.yellow('  Continuing to next task...'));
+    }
+
+    // Mark task as done in requirements.md (DevLoop owns status, not Claude)
+    if (result.success) {
+      await updateTaskStatus(config.requirementsPath, nextTask.id, 'done');
     }
 
     // Commit iteration changes to git (if available)
