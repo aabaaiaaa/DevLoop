@@ -1,6 +1,6 @@
 {
   "name": "claude-devloop",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Automate iterative development with Claude Code",
   "type": "module",
   "main": "dist/index.js",

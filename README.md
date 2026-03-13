@@ -89,13 +89,13 @@ devloop continue
 
 ## Tips for `devloop init`
 
-When you run `devloop init`, DevLoop creates a placeholder `.devloop/requirements.md` and then opens an interactive Claude session. Here's what to expect:
+When you run `devloop init`, DevLoop opens an interactive Claude session that guides you through a two-phase planning process. Here's what to expect:
 
-- **Claude will ask to overwrite the file** — say yes. The placeholder is just a template; Claude needs to replace it with your actual tasks.
-- **Describe what you want to build.** Include any preferences for technologies, libraries, or approaches. Claude will break your idea into small tasks (~30 min each) with dependencies.
+- **Claude will start by asking questions** — describe what you want to build, including any preferences for technologies, libraries, or approaches. Answer fully and don't rush; Claude needs to understand the full scope before writing anything.
 - **Don't ask Claude to start building the project.** The init session is only for creating the requirements document. Implementation happens later when you run `devloop run`. If Claude starts writing code or creating files, remind it to just write the requirements doc.
-- **Review the tasks before exiting.** Ask Claude to adjust priorities, split large tasks, or add missing steps. It's much easier to fix the plan now than after tasks have started running.
-- **Exit when you're happy** with Ctrl+C or `/exit`. DevLoop will commit the requirements and you can start running tasks.
+- **Discuss testing early.** Tell Claude how you'd like the project tested (unit, integration, e2e, specific frameworks). Claude will run those tests automatically during implementation to catch bugs.
+- **Review the task list before confirming.** Claude will propose a task list for your review. Ask it to adjust priorities, split large tasks, or add missing steps. Once you confirm, Claude writes the requirements file.
+- **Exit when you're done** with Ctrl+C or `/exit`. DevLoop will commit the requirements and you can start running tasks.
 
 ## Commands
 
@@ -103,7 +103,7 @@ When you run `devloop init`, DevLoop creates a placeholder `.devloop/requirement
 
 Starts an interactive Claude session to create your `.devloop/requirements.md` file. Claude helps you break down your project into small, actionable tasks.
 
-If a `.devloop/requirements.md` already exists but no session has been created, the command will **adopt** the existing file and set up the necessary infrastructure, allowing you to use `devloop run` immediately.
+If a `.devloop/requirements.md` already exists but no session has been created, the command will **adopt** the existing file and set up the necessary infrastructure (session, `.claude/` files, git commit).
 
 ```bash
 devloop init                    # Use default/configured workspace
@@ -114,14 +114,14 @@ devloop init --force            # Overwrite existing requirements and reinitiali
 **Behavior with existing files:**
 - `.devloop/requirements.md` exists + no session → Adopts existing file, creates infrastructure
 - `.devloop/requirements.md` exists + session exists → Prompts to use `continue` or `--force`
-- No `.devloop/requirements.md` → Creates template and starts fresh
+- No `.devloop/requirements.md` → Starts an interactive Claude session to create one
 
 ### `devloop run`
 
 Executes tasks from `.devloop/requirements.md` in a loop. Each iteration:
 1. Parses requirements to find the next pending task (respecting dependencies)
 2. Spawns Claude with the task details
-3. Claude completes the task and marks it done
+3. Claude completes the task, then DevLoop marks it done
 4. Logs the result to `.devloop/progress.md`
 5. Repeats until all tasks done or max iterations reached
 
@@ -252,7 +252,9 @@ DevLoop commits use a configurable format with an `{action}` placeholder that ge
 
 ```bash
 devloop config set devloopCommitFormat "chore(devloop): {action}"
-devloop config list                    # Show current config
+devloop config get devloopCommitFormat # Show a specific config value
+devloop config list                    # Show all config
+devloop config unset devloopCommitFormat # Remove a config value
 ```
 
 **Hook failure handling**: If a commit fails due to a hook, DevLoop displays the error, prompts you for a valid commit message (with `{action}` placeholder), retries, and saves the format for future commits.

@@ -11,7 +11,7 @@ export async function workspaceCommand(path?: string): Promise<void> {
       console.log(chalk.blue('Default workspace:'), workspace);
     } else {
       console.log(chalk.yellow('No default workspace set.'));
-      console.log(chalk.gray('Use "devloop workspace set <path>" to set one.'));
+      console.log(chalk.gray('Use "devloop workspace <path>" to set one.'));
     }
   }
 }
