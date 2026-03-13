@@ -20,7 +20,7 @@ program
 
 program
   .command('init')
-  .description('Create requirements.md with interactive Claude session')
+  .description('Create requirements with interactive Claude session')
   .option('-w, --workspace <path>', 'Workspace directory')
   .option('--feature <name>', 'Feature mode: create requirements/<name>.md')
   .option('-f, --force', 'Overwrite existing requirements')

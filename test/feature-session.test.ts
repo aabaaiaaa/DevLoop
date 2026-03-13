@@ -106,7 +106,7 @@ describe('feature-session', () => {
     });
 
     it('returns feature names from .md files', async () => {
-      const reqDir = path.join(tmpDir, 'requirements');
+      const reqDir = path.join(tmpDir, '.devloop', 'requirements');
       await fs.mkdir(reqDir, { recursive: true });
       await fs.writeFile(path.join(reqDir, 'auth.md'), '# Auth', 'utf-8');
       await fs.writeFile(path.join(reqDir, 'payments.md'), '# Payments', 'utf-8');
@@ -117,7 +117,7 @@ describe('feature-session', () => {
     });
 
     it('returns sorted list', async () => {
-      const reqDir = path.join(tmpDir, 'requirements');
+      const reqDir = path.join(tmpDir, '.devloop', 'requirements');
       await fs.mkdir(reqDir, { recursive: true });
       await fs.writeFile(path.join(reqDir, 'zebra.md'), '', 'utf-8');
       await fs.writeFile(path.join(reqDir, 'alpha.md'), '', 'utf-8');
@@ -128,7 +128,7 @@ describe('feature-session', () => {
     });
 
     it('returns empty array when directory has no .md files', async () => {
-      const reqDir = path.join(tmpDir, 'requirements');
+      const reqDir = path.join(tmpDir, '.devloop', 'requirements');
       await fs.mkdir(reqDir, { recursive: true });
       await fs.writeFile(path.join(reqDir, 'notes.txt'), '', 'utf-8');
 

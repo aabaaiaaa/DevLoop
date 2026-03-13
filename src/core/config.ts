@@ -59,11 +59,11 @@ export async function resolveWorkspace(cliWorkspace?: string): Promise<string> {
 }
 
 export function getRequirementsPath(workspace: string): string {
-  return path.join(workspace, 'requirements.md');
+  return path.join(workspace, '.devloop', 'requirements.md');
 }
 
 export function getProgressPath(workspace: string): string {
-  return path.join(workspace, 'progress.md');
+  return path.join(workspace, '.devloop', 'progress.md');
 }
 
 export function getSessionPath(workspace: string): string {
@@ -104,12 +104,12 @@ export function resolveFeaturePath(workspace: string, featureInput: string): {
   // Handle explicit path format (requirements/auth.md)
   if (featureInput.includes('/') || featureInput.includes('\\')) {
     const normalized = featureInput.replace(/\\/g, '/');
-    const match = normalized.match(/^requirements\/([^/]+)\.md$/);
+    const match = normalized.match(/^(?:\.devloop\/)?requirements\/([^/]+)\.md$/);
 
     if (!match) {
       throw new Error(
         `Invalid feature path: "${featureInput}"\n` +
-        'Feature paths must be in format: requirements/<name>.md\n' +
+        'Feature paths must be in format: .devloop/requirements/<name>.md\n' +
         'Or use short form: <name>'
       );
     }
@@ -130,11 +130,11 @@ export function resolveFeaturePath(workspace: string, featureInput: string): {
 }
 
 export function getFeatureRequirementsPath(workspace: string, feature: string): string {
-  return path.join(workspace, 'requirements', `${feature}.md`);
+  return path.join(workspace, '.devloop', 'requirements', `${feature}.md`);
 }
 
 export function getFeatureProgressPath(workspace: string, feature: string): string {
-  return path.join(workspace, 'progress', `${feature}.md`);
+  return path.join(workspace, '.devloop', 'progress', `${feature}.md`);
 }
 
 export function getWorkspaceConfigPath(workspace: string): string {

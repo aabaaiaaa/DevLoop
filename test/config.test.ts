@@ -21,29 +21,29 @@ import {
 describe('path builders', () => {
   const ws = '/home/user/project';
 
-  it('getRequirementsPath returns workspace/requirements.md', () => {
-    assert.equal(getRequirementsPath(ws), path.join(ws, 'requirements.md'));
+  it('getRequirementsPath returns workspace/.devloop/requirements.md', () => {
+    assert.equal(getRequirementsPath(ws), path.join(ws, '.devloop', 'requirements.md'));
   });
 
-  it('getProgressPath returns workspace/progress.md', () => {
-    assert.equal(getProgressPath(ws), path.join(ws, 'progress.md'));
+  it('getProgressPath returns workspace/.devloop/progress.md', () => {
+    assert.equal(getProgressPath(ws), path.join(ws, '.devloop', 'progress.md'));
   });
 
   it('getSessionPath returns workspace/.devloop/session.json', () => {
     assert.equal(getSessionPath(ws), path.join(ws, '.devloop', 'session.json'));
   });
 
-  it('getFeatureRequirementsPath returns workspace/requirements/<feature>.md', () => {
+  it('getFeatureRequirementsPath returns workspace/.devloop/requirements/<feature>.md', () => {
     assert.equal(
       getFeatureRequirementsPath(ws, 'auth'),
-      path.join(ws, 'requirements', 'auth.md')
+      path.join(ws, '.devloop', 'requirements', 'auth.md')
     );
   });
 
-  it('getFeatureProgressPath returns workspace/progress/<feature>.md', () => {
+  it('getFeatureProgressPath returns workspace/.devloop/progress/<feature>.md', () => {
     assert.equal(
       getFeatureProgressPath(ws, 'auth'),
-      path.join(ws, 'progress', 'auth.md')
+      path.join(ws, '.devloop', 'progress', 'auth.md')
     );
   });
 
@@ -113,8 +113,8 @@ describe('resolveFeaturePath', () => {
   it('resolves short-form feature name', () => {
     const result = resolveFeaturePath(ws, 'auth');
     assert.equal(result.featureName, 'auth');
-    assert.equal(result.requirementsPath, path.join(ws, 'requirements', 'auth.md'));
-    assert.equal(result.progressPath, path.join(ws, 'progress', 'auth.md'));
+    assert.equal(result.requirementsPath, path.join(ws, '.devloop', 'requirements', 'auth.md'));
+    assert.equal(result.progressPath, path.join(ws, '.devloop', 'progress', 'auth.md'));
   });
 
   it('strips .md extension from short form', () => {
@@ -123,13 +123,19 @@ describe('resolveFeaturePath', () => {
   });
 
   it('resolves explicit path format', () => {
+    const result = resolveFeaturePath(ws, '.devloop/requirements/auth.md');
+    assert.equal(result.featureName, 'auth');
+    assert.equal(result.requirementsPath, path.join(ws, '.devloop', 'requirements', 'auth.md'));
+  });
+
+  it('resolves legacy explicit path format (without .devloop prefix)', () => {
     const result = resolveFeaturePath(ws, 'requirements/auth.md');
     assert.equal(result.featureName, 'auth');
-    assert.equal(result.requirementsPath, path.join(ws, 'requirements', 'auth.md'));
+    assert.equal(result.requirementsPath, path.join(ws, '.devloop', 'requirements', 'auth.md'));
   });
 
   it('resolves explicit path with backslashes', () => {
-    const result = resolveFeaturePath(ws, 'requirements\\auth.md');
+    const result = resolveFeaturePath(ws, '.devloop\\requirements\\auth.md');
     assert.equal(result.featureName, 'auth');
   });
 

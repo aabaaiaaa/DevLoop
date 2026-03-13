@@ -142,7 +142,7 @@ async function continueRequirements(workspace: string, sessionId: string | null)
   await updateSessionPhase(workspace, 'init');
 
   console.log(chalk.cyan('\nResuming requirements session...'));
-  console.log(chalk.gray('Continue refining your requirements.md with Claude.'));
+  console.log(chalk.gray('Continue refining your requirements with Claude.'));
   console.log(chalk.gray('Exit with Ctrl+C or /exit when done.\n'));
 
   const child = spawnClaudeInteractive(workspace, sessionId);

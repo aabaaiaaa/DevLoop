@@ -62,7 +62,7 @@ export async function updateFeatureSessionIteration(
 }
 
 export async function listFeatures(workspace: string): Promise<string[]> {
-  const requirementsDir = path.join(workspace, 'requirements');
+  const requirementsDir = path.join(workspace, '.devloop', 'requirements');
 
   try {
     const files = await fs.readdir(requirementsDir);

@@ -14,7 +14,7 @@ export async function featureListCommand(options: FeatureOptions): Promise<void>
   const features = await listFeatures(workspace);
 
   if (features.length === 0) {
-    console.log(chalk.yellow('\nNo features found in requirements/ directory.'));
+    console.log(chalk.yellow('\nNo features found in .devloop/requirements/ directory.'));
     console.log();
     console.log(chalk.gray('To get started:'));
     console.log(chalk.cyan('  1. Create a feature: devloop init --feature auth'));
@@ -70,7 +70,7 @@ export async function featureStatusCommand(options: FeatureOptions): Promise<voi
   const features = await listFeatures(workspace);
 
   if (features.length === 0) {
-    console.log(chalk.yellow('\nNo features found in requirements/ directory.'));
+    console.log(chalk.yellow('\nNo features found in .devloop/requirements/ directory.'));
     console.log();
     console.log(chalk.gray('To get started:'));
     console.log(chalk.cyan('  1. Create a feature: devloop init --feature auth'));

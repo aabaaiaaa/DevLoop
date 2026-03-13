@@ -184,7 +184,7 @@ export async function statusCommand(options: StatusOptions): Promise<void> {
   try {
     await fs.access(requirementsPath);
   } catch {
-    console.log(chalk.red('Error: requirements.md not found.'));
+    console.log(chalk.red('Error: .devloop/requirements.md not found.'));
     console.log(chalk.gray(`Expected at: ${requirementsPath}`));
     console.log(chalk.gray('Run "devloop init" to create one.'));
     return;
@@ -277,7 +277,7 @@ export async function statusCommand(options: StatusOptions): Promise<void> {
             console.log(chalk.gray(`    ${line}`));
           }
           if (lastIteration.errorDetail.split('\n').length > 10) {
-            console.log(chalk.gray('    ... (see progress.md for full details)'));
+            console.log(chalk.gray(`    ... (see ${progressPath} for full details)`));
           }
         }
       }

@@ -6,7 +6,7 @@ Automate iterative development with Claude Code. DevLoop helps you break down pr
 
 ## Why DevLoop?
 
-DevLoop lets you build projects of any size in a fully unattended way — start a run before bed and wake up to a completed project. The scope of what it can build is limited only by the quality and detail of your `requirements.md`. Because each task runs in a fresh Claude context, there's no context window degradation over long runs.
+DevLoop lets you build projects of any size in a fully unattended way — start a run before bed and wake up to a completed project. The scope of what it can build is limited only by the quality and detail of your requirements. Because each task runs in a fresh Claude context, there's no context window degradation over long runs.
 
 > **Warning:** DevLoop runs Claude Code with `--dangerously-skip-permissions`, which allows Claude to execute commands, write files, and make changes without prompting for confirmation. This is required for unattended operation but means Claude has broad access to your system.
 >
@@ -66,7 +66,7 @@ rmdir /s /q %USERPROFILE%\.devloop
 rm -rf ~/.devloop
 ```
 
-Workspace files (`requirements.md`, `progress.md`, `CLAUDE.md`, `.devloop/`) are stored in each project directory and can be deleted manually if no longer needed.
+Workspace files are stored in `.devloop/` and `.claude/` directories in each project directory. Run `rm -rf .devloop .claude` to remove all DevLoop artifacts.
 
 ## Quick Start
 
@@ -89,7 +89,7 @@ devloop continue
 
 ## Tips for `devloop init`
 
-When you run `devloop init`, DevLoop creates a placeholder `requirements.md` and then opens an interactive Claude session. Here's what to expect:
+When you run `devloop init`, DevLoop creates a placeholder `.devloop/requirements.md` and then opens an interactive Claude session. Here's what to expect:
 
 - **Claude will ask to overwrite the file** — say yes. The placeholder is just a template; Claude needs to replace it with your actual tasks.
 - **Describe what you want to build.** Include any preferences for technologies, libraries, or approaches. Claude will break your idea into small tasks (~30 min each) with dependencies.
@@ -101,28 +101,28 @@ When you run `devloop init`, DevLoop creates a placeholder `requirements.md` and
 
 ### `devloop init`
 
-Starts an interactive Claude session to create your `requirements.md` file. Claude helps you break down your project into small, actionable tasks.
+Starts an interactive Claude session to create your `.devloop/requirements.md` file. Claude helps you break down your project into small, actionable tasks.
 
-If a `requirements.md` already exists but DevLoop hasn't been initialized (no `.devloop/` folder), the command will **adopt** the existing file and set up the necessary infrastructure, allowing you to use `devloop run` immediately.
+If a `.devloop/requirements.md` already exists but no session has been created, the command will **adopt** the existing file and set up the necessary infrastructure, allowing you to use `devloop run` immediately.
 
 ```bash
 devloop init                    # Use default/configured workspace
 devloop init -w ./my-project    # Specify workspace
-devloop init --force            # Overwrite existing requirements.md and reinitialize
+devloop init --force            # Overwrite existing requirements and reinitialize
 ```
 
 **Behavior with existing files:**
-- `requirements.md` exists + no session → Adopts existing file, creates infrastructure
-- `requirements.md` exists + session exists → Prompts to use `continue` or `--force`
-- No `requirements.md` → Creates template and starts fresh
+- `.devloop/requirements.md` exists + no session → Adopts existing file, creates infrastructure
+- `.devloop/requirements.md` exists + session exists → Prompts to use `continue` or `--force`
+- No `.devloop/requirements.md` → Creates template and starts fresh
 
 ### `devloop run`
 
-Executes tasks from `requirements.md` in a loop. Each iteration:
-1. Parses requirements.md to find the next pending task (respecting dependencies)
+Executes tasks from `.devloop/requirements.md` in a loop. Each iteration:
+1. Parses requirements to find the next pending task (respecting dependencies)
 2. Spawns Claude with the task details
 3. Claude completes the task and marks it done
-4. Logs the result to progress.md
+4. Logs the result to `.devloop/progress.md`
 5. Repeats until all tasks done or max iterations reached
 
 ```bash
@@ -147,7 +147,7 @@ devloop status --json           # JSON output for scripting
 ### `devloop continue`
 
 Resume work after a break. Prompts you to choose:
-- **Continue requirements** - Resume refining requirements.md with Claude
+- **Continue requirements** - Resume refining requirements with Claude
 - **Continue run** - Resume task execution from where you left off
 
 ```bash
@@ -172,19 +172,23 @@ DevLoop creates these files in your workspace:
 
 ```
 my-project/
-├── requirements.md       # Your tasks (you + Claude create this)
-├── progress.md           # Iteration logs (auto-generated)
-├── CLAUDE.md             # Context for Claude (auto-generated)
-└── .devloop/
-    ├── session.json      # Session state for resuming
-    └── config.json       # Workspace config (commit format, etc.)
+├── .devloop/
+│   ├── requirements.md   # Your tasks (you + Claude create this)
+│   ├── progress.md       # Iteration logs (auto-generated)
+│   ├── session.json      # Session state for resuming
+│   └── config.json       # Workspace config (commit format, etc.)
+└── .claude/
+    ├── CLAUDE.md         # Context for Claude (auto-generated)
+    └── settings.json     # Claude permission rules (auto-generated)
 ```
+
+Cleanup: `rm -rf .devloop .claude` removes everything DevLoop created.
 
 Global config is stored at `~/.devloop/config.json`.
 
 ## Task Format
 
-Tasks in `requirements.md` follow this format:
+Tasks in `.devloop/requirements.md` follow this format:
 
 ```markdown
 ### TASK-001: Set up project structure
@@ -271,7 +275,7 @@ DevLoop tracks API token usage across iterations:
 - **Cost limits**: Use `-c, --cost-limit` to stop before exceeding a dollar amount
 - **Status display**: `devloop status` shows total tokens and cost for the project
 
-Token data is stored in `progress.md` and persists across sessions.
+Token data is stored in `.devloop/progress.md` and persists across sessions.
 
 ## API Error Handling
 
@@ -297,13 +301,13 @@ Feature mode lets you organize work into independent features, each with their o
 
 ```
 my-project/
-├── requirements/
-│   ├── auth.md              # Feature-specific requirements
-│   └── dashboard.md
-├── progress/
-│   ├── auth.md              # Feature-specific progress
-│   └── dashboard.md
 └── .devloop/
+    ├── requirements/
+    │   ├── auth.md              # Feature-specific requirements
+    │   └── dashboard.md
+    ├── progress/
+    │   ├── auth.md              # Feature-specific progress
+    │   └── dashboard.md
     └── features/
         ├── auth.json        # Feature session state
         └── dashboard.json
@@ -314,7 +318,7 @@ my-project/
 Use the `--feature <name>` flag on any command:
 
 ```bash
-devloop init --feature auth           # Create requirements/auth.md
+devloop init --feature auth           # Create .devloop/requirements/auth.md
 devloop run --feature auth            # Run tasks for auth feature
 devloop continue --feature auth       # Continue auth feature
 devloop status --feature auth         # Check auth feature status

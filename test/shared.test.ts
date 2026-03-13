@@ -12,8 +12,8 @@ describe('buildRunConfig', () => {
     const config = buildRunConfig(baseOptions);
     assert.equal(config.maxIterations, 10);
     assert.equal(config.workspacePath, '/home/user/project');
-    assert.equal(config.requirementsPath, path.join('/home/user/project', 'requirements.md'));
-    assert.equal(config.progressPath, path.join('/home/user/project', 'progress.md'));
+    assert.equal(config.requirementsPath, path.join('/home/user/project', '.devloop', 'requirements.md'));
+    assert.equal(config.progressPath, path.join('/home/user/project', '.devloop', 'progress.md'));
     assert.equal(config.verbose, false);
     assert.equal(config.dryRun, false);
     assert.equal(config.tokenLimit, undefined);

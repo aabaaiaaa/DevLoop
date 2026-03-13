@@ -281,7 +281,7 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
   let hasInterruptedWork = false;
   let interruptedDuringTask = false;  // Track if we interrupted mid-task (for end-of-loop messaging)
   if (gitSetup.gitAvailable) {
-    const uncommitted = await getUncommittedChanges(config.workspacePath, ['.devloop/']);
+    const uncommitted = await getUncommittedChanges(config.workspacePath, ['.devloop/', '.claude/']);
     if (uncommitted.hasChanges) {
       hasInterruptedWork = true;
       console.log(chalk.yellow('\nDetected uncommitted changes (possible interrupted work):'));

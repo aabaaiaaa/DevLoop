@@ -19,18 +19,18 @@ DevLoop is a CLI tool that automates iterative development by orchestrating Clau
 
 ### Two Operational Modes
 
-1. **Interactive Mode** (`init`, `continue requirements`): Spawns Claude CLI with `stdio: 'inherit'` for user interaction. Used for creating/refining requirements.md.
+1. **Interactive Mode** (`init`, `continue requirements`): Spawns Claude CLI with `stdio: 'inherit'` for user interaction. Used for creating/refining `.devloop/requirements.md`.
 
 2. **Automated Mode** (`run`): Spawns Claude CLI with `-p` flag for non-interactive task execution. Each iteration is a fresh Claude context. Uses `--add-dir` to restrict file operations to workspace.
 
 ### Init Behavior
 
 The `init` command handles three scenarios:
-- **Fresh init**: No `requirements.md` exists → creates template and session
-- **Adopt existing**: `requirements.md` exists but no `.devloop/session.json` → keeps existing requirements, creates session and CLAUDE.md infrastructure
+- **Fresh init**: No `.devloop/requirements.md` exists → creates template and session
+- **Adopt existing**: `.devloop/requirements.md` exists but no `.devloop/session.json` → keeps existing requirements, creates session and `.claude/CLAUDE.md` infrastructure
 - **Already initialized**: Both exist → suggests using `continue` or `--force`
 
-This allows users who manually create `requirements.md` to run `devloop init` to set up the infrastructure needed for `devloop run`.
+This allows users who manually create `.devloop/requirements.md` to run `devloop init` to set up the infrastructure needed for `devloop run`.
 
 After creating the session, `init` also:
 - Detects commit hooks from commitlint/husky/git hooks
@@ -54,13 +54,13 @@ cli.ts → commands/*.ts → core/loop.ts → core/claude.ts
 
 ### Key Abstractions
 
-- **Workspace**: A directory containing `requirements.md`, `progress.md`, and `.devloop/session.json`. Resolved via: CLI flag → global config → cwd.
+- **Workspace**: A directory containing `.devloop/` (with `requirements.md`, `progress.md`, `session.json`) and `.claude/` (with `CLAUDE.md`, `settings.json`). Resolved via: CLI flag → global config → cwd.
 - **Session**: Persisted state in `.devloop/session.json` tracking phase (`init`/`run`) and iteration count.
 - **Global Config**: `~/.devloop/config.json` stores default workspace and settings.
 
 ### Document Formats
 
-Tasks in `requirements.md` follow this structure (regex-parsed in `parser/requirements.ts`):
+Tasks in `.devloop/requirements.md` follow this structure (regex-parsed in `parser/requirements.ts`):
 ```markdown
 ### TASK-001: Title
 - **Status**: pending|in-progress|done
@@ -116,8 +116,8 @@ DevLoop automatically integrates with Git when available:
 DevLoop tracks API token usage via Claude's `--output-format json` flag:
 
 - **ClaudeResult.tokenUsage**: Contains `inputTokens`, `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `totalTokens`, and `costUsd`
-- **IterationLog.tokenUsage**: Persisted to `progress.md` for each iteration
-- **Session vs Project tracking**: Loop tracks both session tokens (current run) and project tokens (all-time from progress.md)
+- **IterationLog.tokenUsage**: Persisted to `.devloop/progress.md` for each iteration
+- **Session vs Project tracking**: Loop tracks both session tokens (current run) and project tokens (all-time from `.devloop/progress.md`)
 - **Token limit**: `DevLoopConfig.tokenLimit` stops the loop when the current session exceeds the threshold (not cumulative across all runs)
 - **Detailed breakdown**: Displays individual token counts (input, output, cache write, cache read) and blended price per million tokens
 - **Price per million**: Calculated as `(cost / tokens) * 1,000,000` - a blended rate useful for gauging efficiency
@@ -155,4 +155,4 @@ devloop config list  # Show current config
 3. Retries until successful or user skips
 4. Saves the format for future commits
 
-**Session file handling**: Changes to `.devloop/` are ignored when detecting "interrupted work" and committed with the first iteration instead.
+**Session file handling**: Changes to `.devloop/` and `.claude/` are ignored when detecting "interrupted work" and committed with the first iteration instead.

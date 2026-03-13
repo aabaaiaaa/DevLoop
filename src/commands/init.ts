@@ -52,7 +52,7 @@ Once you have a clear picture, **present a proposed task list** for the user to 
 
 ### Phase 2 — Write requirements.md (only when user confirms)
 
-When the user explicitly says the plan is complete (e.g. "looks good", "go ahead", "create the requirements"), write all tasks at once to \`${path.join(workspace, 'requirements.md')}\`.
+When the user explicitly says the plan is complete (e.g. "looks good", "go ahead", "create the requirements"), write all tasks at once to \`${path.join(workspace, '.devloop', 'requirements.md')}\`.
 
 With full context of the whole plan, assign priorities and dependencies correctly:
 
@@ -77,7 +77,7 @@ With full context of the whole plan, assign priorities and dependencies correctl
 - Priority: \`high\`, \`medium\`, or \`low\`
 - Dependencies: \`none\` or comma-separated task IDs (e.g., \`TASK-001, TASK-002\`)
 - Keep descriptions clear and actionable
-- **Do NOT create any files other than requirements.md** — no source code, no config files, no project scaffolding
+- **Do NOT create any files other than the requirements file** — no source code, no config files, no project scaffolding
 `;
 }
 
@@ -314,7 +314,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
       }
 
       // Create workspace CLAUDE.md to give Claude context about environment and task
-      const claudeMdPath = path.join(workspace, 'CLAUDE.md');
+      const claudeDir = path.join(workspace, '.claude');
+      await fs.mkdir(claudeDir, { recursive: true });
+      const claudeMdPath = path.join(claudeDir, 'CLAUDE.md');
       const claudeMdContent = generateFeatureClaudeMd(workspace, featureName, requirementsPath);
       await fs.writeFile(claudeMdPath, claudeMdContent, 'utf-8');
       console.log(chalk.green(`Created: ${claudeMdPath}`));
@@ -372,7 +374,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
 
   // Show workflow guide
   console.log(chalk.white('Typical workflow:'));
-  console.log(chalk.gray('  1. devloop init          - Create requirements.md (this step)'));
+  console.log(chalk.gray('  1. devloop init          - Create requirements (this step)'));
   console.log(chalk.gray('  2. devloop status        - View tasks and progress'));
   console.log(chalk.gray('  3. devloop run -n 10     - Execute tasks in a loop'));
   console.log(chalk.gray('  4. devloop continue      - Resume requirements or run later'));
@@ -401,7 +403,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
     } else if (!existingSession) {
       // requirements.md exists but no session - adopt the existing file
       adoptExisting = true;
-      console.log(chalk.cyan('\nFound existing requirements.md - adopting it.'));
+      console.log(chalk.cyan('\nFound existing requirements - adopting it.'));
       console.log(chalk.gray('Setting up DevLoop infrastructure...'));
     }
     // If --force is used, we'll overwrite below
@@ -413,7 +415,9 @@ export async function initCommand(options: InitOptions): Promise<void> {
   }
 
   // Create workspace CLAUDE.md to give Claude context about environment and task
-  const claudeMdPath = path.join(workspace, 'CLAUDE.md');
+  const claudeDir = path.join(workspace, '.claude');
+  await fs.mkdir(claudeDir, { recursive: true });
+  const claudeMdPath = path.join(claudeDir, 'CLAUDE.md');
   const claudeMdContent = generateWorkspaceClaudeMd(workspace);
   await fs.writeFile(claudeMdPath, claudeMdContent, 'utf-8');
   console.log(chalk.green(`Created: ${claudeMdPath}`));
