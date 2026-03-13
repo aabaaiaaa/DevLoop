@@ -182,7 +182,7 @@ my-project/
     └── settings.json     # Claude permission rules (auto-generated)
 ```
 
-Cleanup: `rm -rf .devloop .claude` removes everything DevLoop created.
+Cleanup: `rm -rf .devloop .claude` removes everything DevLoop created. DevLoop will also remind you of this when all tasks complete.
 
 Global config is stored at `~/.devloop/config.json`.
 

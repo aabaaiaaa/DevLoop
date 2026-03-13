@@ -19,18 +19,23 @@ DevLoop is a CLI tool that automates iterative development by orchestrating Clau
 
 ### Two Operational Modes
 
-1. **Interactive Mode** (`init`, `continue requirements`): Spawns Claude CLI with `stdio: 'inherit'` for user interaction. Used for creating/refining `.devloop/requirements.md`.
+1. **Interactive Mode** (`init`, `continue` → "Continue working on requirements"): Spawns Claude CLI with `stdio: 'inherit'` for user interaction. Used for creating/refining `.devloop/requirements.md`.
 
 2. **Automated Mode** (`run`): Spawns Claude CLI with `-p` flag for non-interactive task execution. Each iteration is a fresh Claude context. Uses `--add-dir` to restrict file operations to workspace.
 
 ### Init Behavior
 
-The `init` command handles three scenarios:
-- **Fresh init**: No `.devloop/requirements.md` exists → creates template and session
-- **Adopt existing**: `.devloop/requirements.md` exists but no `.devloop/session.json` → keeps existing requirements, creates session and `.claude/CLAUDE.md` infrastructure
+The `init` command handles three scenarios (same logic for both legacy and feature mode):
+- **Fresh init**: No requirements file exists → creates template and session
+- **Adopt existing**: Requirements file exists but no session → keeps existing requirements, creates session and `.claude/CLAUDE.md` infrastructure
 - **Already initialized**: Both exist → suggests using `continue` or `--force`
 
-This allows users who manually create `.devloop/requirements.md` to run `devloop init` to set up the infrastructure needed for `devloop run`.
+This allows users who manually create a requirements file to run `devloop init` to set up the infrastructure needed for `devloop run`.
+
+In **feature mode** (`--feature <name>`), files are scoped per feature:
+- Requirements: `.devloop/requirements/<name>.md`
+- Progress: `.devloop/progress/<name>.md`
+- Session: `.devloop/features/<name>.json`
 
 After creating the session, `init` also:
 - Detects commit hooks from commitlint/husky/git hooks
@@ -155,4 +160,4 @@ devloop config list  # Show current config
 3. Retries until successful or user skips
 4. Saves the format for future commits
 
-**Session file handling**: Changes to `.devloop/` and `.claude/` are ignored when detecting "interrupted work" and committed with the first iteration instead.
+**Session file handling**: Changes to `.devloop/` and `.claude/` are excluded from the uncommitted changes check that detects interrupted work, so they don't trigger false positives. These files are still committed as part of regular iteration commits.
