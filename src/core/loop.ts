@@ -770,6 +770,13 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
     // (mid-task interruption already printed detailed messaging)
     console.log(chalk.yellow('\nRun was stopped by user. Use "devloop continue" to resume.'));
   }
+
+  // Show cleanup instructions when all tasks are done
+  if (finalProgress && finalProgress.completed === finalProgress.totalTasks) {
+    console.log(chalk.white('\nAll tasks complete! When you\'re done with DevLoop, you can clean up:'));
+    console.log(chalk.gray('  Remove DevLoop files:  rm -rf .devloop .claude'));
+    console.log(chalk.gray('  Keep your code — only tool-generated files are in those folders.'));
+  }
 }
 
 function sleep(ms: number): Promise<void> {
