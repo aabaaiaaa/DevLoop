@@ -12,6 +12,9 @@ export async function readProgress(filePath: string): Promise<Progress | null> {
 }
 
 export function parseProgressContent(content: string): Progress {
+  // Normalize CRLF to LF (Windows editors may save with CRLF)
+  content = content.replace(/\r\n/g, '\n');
+
   // Parse summary section
   const totalMatch = content.match(/\*\*Total Tasks\*\*:\s*(\d+)/);
   const completedMatch = content.match(/\*\*Completed\*\*:\s*(\d+)/);

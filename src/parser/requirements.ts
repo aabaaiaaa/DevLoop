@@ -13,7 +13,7 @@ export async function parseRequirements(filePath: string): Promise<Requirements>
 }
 
 export function parseRequirementsContent(content: string): Requirements {
-  const lines = content.split('\n');
+  const lines = content.split('\n').map(l => l.replace(/\r$/, ''));
 
   const tasks: Task[] = [];
   let currentTask: Partial<Task> | null = null;
@@ -92,6 +92,12 @@ export function getNextTask(requirements: Requirements): Task | null {
     requirements.tasks.filter(t => t.status === 'done').map(t => t.id)
   );
 
+  // In-progress tasks take priority (interrupted work that needs to be retried)
+  const inProgressTasks = requirements.tasks.filter(t => t.status === 'in-progress');
+  if (inProgressTasks.length > 0) {
+    return inProgressTasks[0];
+  }
+
   // Sort by priority (high > medium > low), then by task ID
   const priorityOrder = { high: 0, medium: 1, low: 2 };
   const pendingTasks = requirements.tasks
@@ -125,15 +131,16 @@ export async function updateTaskStatus(
   let foundTask = false;
 
   for (let i = 0; i < lines.length; i++) {
-    if (taskHeaderRegex.test(lines[i])) {
+    const clean = lines[i].replace(/\r$/, '');
+    if (taskHeaderRegex.test(clean)) {
       foundTask = true;
       continue;
     }
     if (foundTask) {
       // If we hit another task header, stop searching
-      if (TASK_REGEX.test(lines[i])) break;
+      if (TASK_REGEX.test(clean)) break;
 
-      const statusMatch = lines[i].match(STATUS_REGEX);
+      const statusMatch = clean.match(STATUS_REGEX);
       if (statusMatch) {
         lines[i] = lines[i].replace(
           /\*\*Status\*\*:\s*(pending|in-progress|done)/i,

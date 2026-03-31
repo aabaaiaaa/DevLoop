@@ -15,7 +15,6 @@ import * as fs from 'fs/promises';
 
 // Graceful shutdown state
 let stopRequested = false;
-let forceStopRequested = false;
 
 // Terminal title management
 let originalTitle: string | null = null;
@@ -92,31 +91,51 @@ function updateSpinnerActivity(state: SpinnerState, activity: string): void {
   state.currentActivity = activity;
 }
 
+/**
+ * Setup graceful shutdown via raw stdin keypress (not SIGINT).
+ *
+ * Q key = graceful stop (wait for current task to complete, then stop)
+ * Ctrl+C = natural process kill (kills Claude too — this is the force stop)
+ *
+ * Using keypresses instead of SIGINT avoids the problem of SIGINT propagating
+ * to child processes and killing Claude mid-task.
+ */
 function setupGracefulShutdown(): () => void {
-  const handler = () => {
-    if (forceStopRequested) {
-      // Third Ctrl+C - force exit
+  // Only use raw mode if stdin is a TTY (interactive terminal)
+  if (!process.stdin.isTTY) {
+    return () => {
+      stopRequested = false;
+    };
+  }
+
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.setEncoding('utf8');
+
+  const onData = (key: string) => {
+    if (key === 'q' || key === 'Q') {
+      if (!stopRequested) {
+        stopRequested = true;
+        console.log(chalk.yellow('\n\nGraceful stop requested - will stop after current task completes.'));
+        console.log(chalk.gray('Press Ctrl+C to force stop immediately (kills current task).'));
+      }
+    } else if (key === '\x03') {
+      // Ctrl+C in raw mode — force stop
       console.log(chalk.red('\n\nForce stopping...'));
       process.exit(1);
-    } else if (stopRequested) {
-      // Second Ctrl+C - warn about force stop
-      forceStopRequested = true;
-      console.log(chalk.yellow('\nPress Ctrl+C again to force stop immediately.'));
-    } else {
-      // First Ctrl+C - request graceful stop
-      stopRequested = true;
-      console.log(chalk.yellow('\n\nGraceful stop requested - will stop after current task completes.'));
-      console.log(chalk.gray('Press Ctrl+C again to force stop (may leave work incomplete).'));
     }
   };
 
-  process.on('SIGINT', handler);
+  process.stdin.on('data', onData);
 
   // Return cleanup function
   return () => {
-    process.removeListener('SIGINT', handler);
+    process.stdin.removeListener('data', onData);
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(false);
+    }
+    process.stdin.pause();
     stopRequested = false;
-    forceStopRequested = false;
   };
 }
 
@@ -242,7 +261,7 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
   setTerminalTitle(`DevLoop: ${featurePrefix}Starting...`);
 
   console.log(chalk.blue.bold(`\n=== DevLoop Starting ${config.featureName ? `(Feature: ${config.featureName})` : ''} ===\n`));
-  console.log(chalk.gray('Tip: Press Ctrl+C to stop after the current task completes.'));
+  console.log(chalk.gray('Tip: Press Q to stop after the current task completes.'));
   console.log(chalk.gray(`Workspace: ${config.workspacePath}`));
   if (config.featureName) {
     console.log(chalk.gray(`Feature: ${config.featureName}`));
@@ -279,7 +298,6 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
   // Check for uncommitted changes (potential interrupted work)
   // Ignore .devloop/ changes as these are session files updated at run start
   let hasInterruptedWork = false;
-  let interruptedDuringTask = false;  // Track if we interrupted mid-task (for end-of-loop messaging)
   if (gitSetup.gitAvailable) {
     const uncommitted = await getUncommittedChanges(config.workspacePath, ['.devloop/', '.claude/']);
     if (uncommitted.hasChanges) {
@@ -363,6 +381,10 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
         await updateTaskStatus(config.requirementsPath, task.id, 'pending');
         console.log(chalk.yellow(`  Reverted ${task.id} to pending (marked done but no completion log)`));
         reverted++;
+      } else if (task.status === 'in-progress' && completedIds.has(task.id)) {
+        await updateTaskStatus(config.requirementsPath, task.id, 'done');
+        console.log(chalk.green(`  Promoted ${task.id} to done (completion log found)`));
+        reverted++;
       }
     }
     if (reverted > 0) {
@@ -408,9 +430,10 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
 
     // Check if all tasks are done
     const pendingTasks = requirements.tasks.filter(t => t.status === 'pending');
+    const inProgressTasks = requirements.tasks.filter(t => t.status === 'in-progress');
     const doneTasks = requirements.tasks.filter(t => t.status === 'done');
 
-    if (pendingTasks.length === 0) {
+    if (pendingTasks.length === 0 && inProgressTasks.length === 0) {
       setTerminalTitle(`DevLoop: ${featurePrefix}All ${doneTasks.length} tasks complete!`);
       console.log(chalk.green.bold('\n✓ All tasks completed!'));
       console.log(chalk.gray(`Completed ${doneTasks.length} tasks in ${i - 1} iterations.`));
@@ -464,7 +487,7 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
     console.log(chalk.cyan(`\nIteration ${i}: ${nextTask.id} - ${nextTask.title}`));
     console.log(chalk.gray(`  Priority: ${nextTask.priority}`));
     console.log(chalk.gray(`  Description: ${nextTask.description}`));
-    console.log(chalk.gray(`  Press Ctrl+C to stop after this task completes`));
+    console.log(chalk.gray(`  Press Q to stop after this task | Ctrl+C to force stop`));
 
     if (config.dryRun) {
       console.log(chalk.yellow(`  [DRY RUN] Would execute this task`));
@@ -489,6 +512,9 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
     let spinnerState: SpinnerState | null = null;
 
     try {
+      // Mark task as in-progress before invoking Claude
+      await updateTaskStatus(config.requirementsPath, nextTask.id, 'in-progress');
+
       // Set crash marker before invoking Claude
       await setActiveTask(config.workspacePath, config.featureName, {
         taskId: nextTask.id,
@@ -521,59 +547,6 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
       logger.info(`Iteration ${i}: Claude finished - success=${result.success}, exitCode=${result.exitCode}, signal=${result.signal}, duration=${result.duration}ms`);
       if (!result.success) {
         logger.error(`Iteration ${i}: ${result.errorType} - ${result.error}`);
-      }
-
-      // Check if stop was requested during task execution
-      // If so, treat as interrupted - do NOT mark as complete even if Claude exited cleanly
-      if (stopRequested) {
-        if (config.verbose) {
-          console.log(chalk.yellow(`  ⚠ Task interrupted by user request`));
-        } else {
-          spinner.warn(chalk.yellow(`  Task ${nextTask.id} interrupted by user request`));
-        }
-
-        const duration = `${Math.round(result.duration / 1000)}s`;
-
-        // Record as interrupted - task was NOT completed
-        const iterationLog: IterationLog = {
-          iteration: i,
-          timestamp: iterationStart.toISOString(),
-          taskCompleted: null,  // NOT completed
-          summary: `Interrupted: ${nextTask.title} (user requested stop)`,
-          duration,
-          exitStatus: 'interrupted',
-          tokenUsage: result.tokenUsage
-        };
-
-        await appendIteration(config.progressPath, requirements.tasks.length, iterationLog);
-
-        // Update session iteration count
-        if (config.featureName) {
-          await updateFeatureSessionIteration(config.workspacePath, config.featureName, i);
-        } else {
-          await updateSessionIteration(config.workspacePath, i);
-        }
-
-        // Commit the interrupted state (if any changes were made)
-        await commitIteration(
-          config.workspacePath,
-          i,
-          null,  // No task completed
-          null,
-          false, // Not successful
-          config.verbose,
-          config.featureName
-        );
-
-        logger.info(`Iteration ${i}: Interrupted by user request`);
-
-        console.log(chalk.yellow('\nStopping as requested. Task was NOT marked as complete.'));
-        console.log(chalk.gray('Run "devloop continue" to resume and retry this task.'));
-        interruptedDuringTask = true;
-
-        // Clear crash marker before breaking
-        await setActiveTask(config.workspacePath, config.featureName, null);
-        break;
       }
 
       // Update token tracking (both session and project)
@@ -662,9 +635,12 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
         console.log(chalk.yellow('  Continuing to next task...'));
       }
 
-      // Mark task as done in requirements.md (DevLoop owns status, not Claude)
+      // Update task status in requirements.md (DevLoop owns status, not Claude)
       if (result.success) {
         await updateTaskStatus(config.requirementsPath, nextTask.id, 'done');
+      } else {
+        // Revert to pending on failure so it can be retried
+        await updateTaskStatus(config.requirementsPath, nextTask.id, 'pending');
       }
 
       // Commit iteration changes to git (if available)
@@ -690,6 +666,17 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
 
       // Clear crash marker after successful iteration completion
       await setActiveTask(config.workspacePath, config.featureName, null);
+
+      // Check if graceful stop was requested during this task
+      if (stopRequested) {
+        if (result.success) {
+          console.log(chalk.yellow(`\nTask ${nextTask.id} completed. Stopping as requested.`));
+        } else {
+          console.log(chalk.yellow(`\nStopping as requested.`));
+        }
+        console.log(chalk.gray('Run "devloop continue" to resume.'));
+        break;
+      }
 
     } catch (iterationError) {
       // Stop spinner if still running
@@ -765,11 +752,6 @@ export async function runLoop(config: DevLoopConfig): Promise<void> {
     setTerminalTitle('DevLoop: Complete');
   }
 
-  if (stopRequested && !interruptedDuringTask) {
-    // Only show generic message if we stopped between tasks, not mid-task
-    // (mid-task interruption already printed detailed messaging)
-    console.log(chalk.yellow('\nRun was stopped by user. Use "devloop continue" to resume.'));
-  }
 
   // Show cleanup instructions when all tasks are done
   if (finalProgress && finalProgress.completed === finalProgress.totalTasks) {

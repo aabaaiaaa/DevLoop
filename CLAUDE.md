@@ -74,7 +74,22 @@ Tasks in `.devloop/requirements.md` follow this structure (regex-parsed in `pars
 - **Description**: What to do
 ```
 
-Task selection (`getNextTask`) respects dependencies and prioritizes by priority then ID.
+Task selection (`getNextTask`) returns the next task to work on:
+1. In-progress tasks first (interrupted work that needs retrying)
+2. Then pending tasks, sorted by priority (high > medium > low) then ID
+3. Only pending tasks whose dependencies are all `done` are eligible
+
+During execution, tasks transition: `pending` → `in-progress` (before Claude starts) → `done` (on success) or back to `pending` (on failure). If the run is stopped gracefully (Q key) mid-task and Claude succeeds, the task is marked `done`.
+
+### Status Cross-Reference
+
+At the start of each run, the loop cross-references `requirements.md` against `progress.md` to fix inconsistencies (e.g., from crashes or interrupted runs):
+- Task marked `done` in requirements but **no completion log** in progress → reverted to `pending`
+- Task marked `in-progress` in requirements but **has a completion log** in progress → promoted to `done`
+
+### CRLF Handling
+
+Parsers for `requirements.md` and `progress.md` normalize CRLF line endings to LF before regex matching. This ensures DevLoop works correctly on Windows even if files are edited with tools that save with CRLF endings.
 
 ### Safety
 
@@ -89,12 +104,12 @@ The run loop provides visual feedback:
 
 ### Graceful Shutdown
 
-The run loop handles SIGINT (Ctrl+C) gracefully:
-- First Ctrl+C: Sets `stopRequested` flag, loop exits after current task completes
-- Second Ctrl+C: Sets `forceStopRequested` flag, warns user
-- Third Ctrl+C: Force exits with `process.exit(1)`
+The run loop uses **raw stdin keypresses** (not SIGINT) for graceful shutdown, avoiding the problem of SIGINT propagating to the child Claude process and killing it mid-task:
 
-Signal handler is cleaned up when loop exits normally.
+- **Q key**: Sets `stopRequested` flag. Current task runs to completion, then the loop stops. If the task succeeds, it is marked as done; work is not lost.
+- **Ctrl+C**: Force stop. In raw mode this is handled as a keypress (`\x03`), calling `process.exit(1)`. This kills everything including the Claude child process.
+
+Stdin is put into raw mode (`setRawMode(true)`) at loop start and restored on cleanup. Only works when stdin is a TTY; non-TTY environments skip keypress handling.
 
 ### Interrupted Work Recovery
 
@@ -118,7 +133,7 @@ DevLoop automatically integrates with Git when available:
 
 ### Token Tracking
 
-DevLoop tracks API token usage via Claude's `--output-format json` flag:
+DevLoop tracks API token usage via Claude's `--output-format stream-json` flag:
 
 - **ClaudeResult.tokenUsage**: Contains `inputTokens`, `outputTokens`, `cacheCreationTokens`, `cacheReadTokens`, `totalTokens`, and `costUsd`
 - **IterationLog.tokenUsage**: Persisted to `.devloop/progress.md` for each iteration

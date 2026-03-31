@@ -119,9 +119,9 @@ devloop init --force            # Overwrite existing requirements and reinitiali
 ### `devloop run`
 
 Executes tasks from `.devloop/requirements.md` in a loop. Each iteration:
-1. Parses requirements to find the next pending task (respecting dependencies)
-2. Spawns Claude with the task details
-3. Claude completes the task, then DevLoop marks it done
+1. Parses requirements to find the next task (in-progress first, then pending by priority/dependencies)
+2. Marks the task as `in-progress` and spawns Claude with the task details
+3. On success, marks the task `done`; on failure, reverts to `pending` for retry
 4. Logs the result to `.devloop/progress.md`
 5. Repeats until all tasks done or max iterations reached
 
@@ -220,11 +220,10 @@ DevLoop provides visual feedback during execution:
 
 DevLoop supports graceful shutdown during task execution:
 
-- **First Ctrl+C**: Requests graceful stop - the current task will complete, then DevLoop stops
-- **Second Ctrl+C**: Warning that next press will force stop
-- **Third Ctrl+C**: Force stops immediately (may leave work incomplete)
+- **Press Q**: Requests graceful stop — the current task runs to completion (and is marked as done if successful), then DevLoop stops before starting the next task
+- **Ctrl+C**: Force stops immediately, killing the Claude process mid-task
 
-This allows you to stop the loop without interrupting Claude mid-task.
+This allows you to stop the loop without interrupting Claude mid-task. A hint is shown before each task: `Press Q to stop after this task | Ctrl+C to force stop`.
 
 ## Interrupted Work Recovery
 
