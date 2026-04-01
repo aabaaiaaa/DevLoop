@@ -8,7 +8,7 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 
 const DEFAULT_CONFIG: GlobalConfig = {
   defaultWorkspace: null,
-  maxIterations: 10
+  maxIterations: 100
 };
 
 export async function ensureConfigDir(): Promise<void> {
@@ -62,86 +62,19 @@ export function getRequirementsPath(workspace: string): string {
   return path.join(workspace, '.devloop', 'requirements.md');
 }
 
+export function getTasksPath(workspace: string): string {
+  return path.join(workspace, '.devloop', 'tasks.md');
+}
+
 export function getProgressPath(workspace: string): string {
   return path.join(workspace, '.devloop', 'progress.md');
 }
 
-export function getSessionPath(workspace: string): string {
-  return path.join(workspace, '.devloop', 'session.json');
-}
-
-/**
- * Validates a feature name to ensure it's a safe filename
- * @throws Error if feature name is invalid
- */
-export function validateFeatureName(feature: string): void {
-  // Must be alphanumeric with hyphens or underscores
-  if (!/^[a-zA-Z0-9_-]+$/.test(feature)) {
-    throw new Error(
-      `Invalid feature name: "${feature}"\n` +
-      'Feature names must be alphanumeric with hyphens or underscores only.\n' +
-      'Example: my-feature or my_feature'
-    );
-  }
-
-  // Prevent path traversal
-  if (feature.includes('..') || feature.includes('/') || feature.includes('\\')) {
-    throw new Error(`Invalid feature name: "${feature}" (path traversal not allowed)`);
-  }
-}
-
-/**
- * Resolves feature input to normalized paths
- * Handles both short form (auth) and explicit paths (requirements/auth.md)
- */
-export function resolveFeaturePath(workspace: string, featureInput: string): {
-  featureName: string;
-  requirementsPath: string;
-  progressPath: string;
-} {
-  let featureName: string;
-
-  // Handle explicit path format (requirements/auth.md)
-  if (featureInput.includes('/') || featureInput.includes('\\')) {
-    const normalized = featureInput.replace(/\\/g, '/');
-    const match = normalized.match(/^(?:\.devloop\/)?requirements\/([^/]+)\.md$/);
-
-    if (!match) {
-      throw new Error(
-        `Invalid feature path: "${featureInput}"\n` +
-        'Feature paths must be in format: .devloop/requirements/<name>.md\n' +
-        'Or use short form: <name>'
-      );
-    }
-
-    featureName = match[1];
-  } else {
-    // Remove .md extension if provided
-    featureName = featureInput.replace(/\.md$/, '');
-  }
-
-  validateFeatureName(featureName);
-
-  return {
-    featureName,
-    requirementsPath: getFeatureRequirementsPath(workspace, featureName),
-    progressPath: getFeatureProgressPath(workspace, featureName)
-  };
-}
-
-export function getFeatureRequirementsPath(workspace: string, feature: string): string {
-  return path.join(workspace, '.devloop', 'requirements', `${feature}.md`);
-}
-
-export function getFeatureProgressPath(workspace: string, feature: string): string {
-  return path.join(workspace, '.devloop', 'progress', `${feature}.md`);
-}
-
-export function getWorkspaceConfigPath(workspace: string): string {
+function getWorkspaceConfigPath(workspace: string): string {
   return path.join(workspace, '.devloop', 'config.json');
 }
 
-export async function readWorkspaceConfig(workspace: string): Promise<import('../types/feature.js').WorkspaceConfig> {
+export async function readWorkspaceConfig(workspace: string): Promise<import('../types/index.js').WorkspaceConfig> {
   try {
     const configPath = getWorkspaceConfigPath(workspace);
     const content = await fs.readFile(configPath, 'utf-8');
@@ -151,7 +84,7 @@ export async function readWorkspaceConfig(workspace: string): Promise<import('..
   }
 }
 
-export async function writeWorkspaceConfig(workspace: string, config: import('../types/feature.js').WorkspaceConfig): Promise<void> {
+export async function writeWorkspaceConfig(workspace: string, config: import('../types/index.js').WorkspaceConfig): Promise<void> {
   const configPath = getWorkspaceConfigPath(workspace);
   const devloopDir = path.dirname(configPath);
 

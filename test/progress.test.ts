@@ -212,6 +212,56 @@ describe('generateProgressContent', () => {
     assert.equal(parsed.iterations[0].errorType, 'network_error');
     assert.equal(parsed.iterations[0].errorDetail, 'Connection refused');
   });
+
+  it('round-trips taskAttempted field', () => {
+    const iterations: IterationLog[] = [
+      {
+        iteration: 1,
+        timestamp: '2025-06-01',
+        taskAttempted: 'TASK-002',
+        taskCompleted: null,
+        summary: 'Failed',
+        duration: '10s',
+        exitStatus: 'error'
+      },
+      {
+        iteration: 2,
+        timestamp: '2025-06-01',
+        taskAttempted: 'TASK-001',
+        taskCompleted: 'TASK-001',
+        summary: 'Completed task one',
+        duration: '45s',
+        exitStatus: 'success'
+      }
+    ];
+
+    const content = generateProgressContent(2, 1, iterations);
+    const parsed = parseProgressContent(content);
+    assert.equal(parsed.iterations[0].taskAttempted, 'TASK-002');
+    assert.equal(parsed.iterations[0].taskCompleted, null);
+    assert.equal(parsed.iterations[1].taskAttempted, 'TASK-001');
+    assert.equal(parsed.iterations[1].taskCompleted, 'TASK-001');
+  });
+
+  it('parses old progress files without taskAttempted as undefined', () => {
+    const content = `## Summary
+- **Total Tasks**: 1
+- **Completed**: 1
+- **Remaining**: 0
+- **Last Updated**: 2025-06-01
+
+## Iteration Log
+
+### Iteration 1 - 2025-06-01
+- **Task Completed**: TASK-001
+- **Summary**: Done
+- **Duration**: 60s
+- **Exit Status**: success
+`;
+    const parsed = parseProgressContent(content);
+    assert.equal(parsed.iterations[0].taskAttempted, undefined);
+    assert.equal(parsed.iterations[0].taskCompleted, 'TASK-001');
+  });
 });
 
 // --- getCompletedTaskIds ---

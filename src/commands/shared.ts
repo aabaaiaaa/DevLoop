@@ -1,13 +1,14 @@
 import * as readline from 'readline';
 import chalk from 'chalk';
 import { checkClaudeInstalled } from '../core/claude.js';
-import { getRequirementsPath, getProgressPath } from '../core/config.js';
+import { getRequirementsPath, getTasksPath, getProgressPath } from '../core/config.js';
 import { DevLoopConfig } from '../types/index.js';
 
 /**
- * Prompt user with a yes/no question. Returns true for y/yes/empty (default yes).
+ * Prompt user with a yes/no question.
+ * @param defaultYes - If true (default), empty input means "yes". If false, empty input means "no".
  */
-export async function promptUser(question: string): Promise<boolean> {
+export async function promptUser(question: string, defaultYes: boolean = true): Promise<boolean> {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
@@ -16,7 +17,12 @@ export async function promptUser(question: string): Promise<boolean> {
   return new Promise((resolve) => {
     rl.question(question, (answer) => {
       rl.close();
-      resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes' || answer === '');
+      const trimmed = answer.trim().toLowerCase();
+      if (trimmed === '') {
+        resolve(defaultYes);
+      } else {
+        resolve(trimmed === 'y' || trimmed === 'yes');
+      }
     });
   });
 }
@@ -33,33 +39,66 @@ export async function requireClaudeInstalled(): Promise<void> {
   }
 }
 
+const BANNER = `
+ ██████╗ ███████╗██╗   ██╗██╗      ██████╗  ██████╗ ██████╗
+ ██╔══██╗██╔════╝██║   ██║██║     ██╔═══██╗██╔═══██╗██╔══██╗
+ ██║  ██║█████╗  ██║   ██║██║     ██║   ██║██║   ██║██████╔╝
+ ██║  ██║██╔══╝  ╚██╗ ██╔╝██║     ██║   ██║██║   ██║██╔═══╝
+ ██████╔╝███████╗ ╚████╔╝ ███████╗╚██████╔╝╚██████╔╝██║
+ ╚═════╝ ╚══════╝  ╚═══╝  ╚══════╝ ╚═════╝  ╚═════╝ ╚═╝`;
+
+/**
+ * Print the DevLoop ASCII banner with an optional subtitle.
+ */
+export function printBanner(subtitle?: string): void {
+  console.log(chalk.blue.bold(BANNER));
+  if (subtitle) {
+    console.log(chalk.blue.bold(`  ${subtitle}`));
+  }
+  console.log();
+}
+
 export interface RunConfigOptions {
   workspace: string;
   requirementsPath?: string;
+  tasksPath?: string;
   progressPath?: string;
   maxIterations?: string;
   tokenLimit?: string;
   costLimit?: string;
   verbose?: boolean;
   dryRun?: boolean;
-  featureName?: string;
-  sessionAction?: 'create' | 'update' | 'create-feature' | 'none';
+  sessionAction?: 'create' | 'update' | 'none';
 }
 
 /**
  * Build a DevLoopConfig from command options.
  */
+const MAX_ITERATIONS_CEILING = 1000;
+const MAX_COST_CEILING = 500;
+const DEFAULT_COST_LIMIT = 10;
+const DEFAULT_MAX_ITERATIONS = 100;
+
 export function buildRunConfig(options: RunConfigOptions): DevLoopConfig {
+  const maxIterations = Math.min(
+    parseInt(options.maxIterations || String(DEFAULT_MAX_ITERATIONS), 10),
+    MAX_ITERATIONS_CEILING
+  );
+  const costLimit = Math.min(
+    options.costLimit ? parseFloat(options.costLimit) || DEFAULT_COST_LIMIT : DEFAULT_COST_LIMIT,
+    MAX_COST_CEILING
+  );
+
   return {
-    maxIterations: parseInt(options.maxIterations || '10', 10),
+    maxIterations,
     requirementsPath: options.requirementsPath || getRequirementsPath(options.workspace),
+    tasksPath: options.tasksPath || getTasksPath(options.workspace),
     progressPath: options.progressPath || getProgressPath(options.workspace),
     workspacePath: options.workspace,
     verbose: options.verbose || false,
     dryRun: options.dryRun || false,
-    tokenLimit: options.tokenLimit ? parseInt(options.tokenLimit, 10) : undefined,
-    costLimit: options.costLimit ? parseFloat(options.costLimit) : undefined,
-    featureName: options.featureName,
+    tokenLimit: options.tokenLimit ? parseInt(options.tokenLimit, 10) || undefined : undefined,
+    costLimit,
     sessionAction: options.sessionAction
   };
 }

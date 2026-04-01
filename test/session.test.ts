@@ -46,7 +46,7 @@ describe('session', () => {
 
   describe('writeSession', () => {
     it('creates .devloop directory and writes session', async () => {
-      const session = { phase: 'init' as const, sessionId: null, lastIteration: 0, startedAt: '2025-01-01' };
+      const session = { phase: 'init' as const, sessionId: null, lastIteration: 0, startedAt: '2025-01-01', iteration: 1 };
       await writeSession(tmpDir, session);
 
       const read = await readSession(tmpDir);
@@ -56,8 +56,8 @@ describe('session', () => {
     });
 
     it('overwrites existing session', async () => {
-      const s1 = { phase: 'init' as const, sessionId: null, lastIteration: 0, startedAt: '2025-01-01' };
-      const s2 = { phase: 'run' as const, sessionId: 'xyz', lastIteration: 3, startedAt: '2025-01-01' };
+      const s1 = { phase: 'init' as const, sessionId: null, lastIteration: 0, startedAt: '2025-01-01', iteration: 1 };
+      const s2 = { phase: 'run' as const, sessionId: 'xyz', lastIteration: 3, startedAt: '2025-01-01', iteration: 1 };
       await writeSession(tmpDir, s1);
       await writeSession(tmpDir, s2);
 
@@ -130,6 +130,70 @@ describe('session', () => {
 
       const read = await readSession(tmpDir);
       assert.equal(read!.lastIteration, 3);
+    });
+  });
+
+  describe('iteration field', () => {
+    it('readSession defaults iteration to 1 for old sessions without field', async () => {
+      const sessionDir = path.join(tmpDir, '.devloop');
+      await fs.mkdir(sessionDir, { recursive: true });
+      await fs.writeFile(
+        path.join(sessionDir, 'session.json'),
+        JSON.stringify({ phase: 'run', sessionId: null, lastIteration: 5, startedAt: '2025-01-01' }),
+        'utf-8'
+      );
+      const session = await readSession(tmpDir);
+      assert.ok(session);
+      assert.equal(session!.iteration, 1);
+    });
+
+    it('createSession defaults iteration to 1', async () => {
+      const session = await createSession(tmpDir, 'init');
+      assert.equal(session.iteration, 1);
+
+      const read = await readSession(tmpDir);
+      assert.equal(read!.iteration, 1);
+    });
+
+    it('createSession accepts custom iteration', async () => {
+      const session = await createSession(tmpDir, 'init', 3);
+      assert.equal(session.iteration, 3);
+
+      const read = await readSession(tmpDir);
+      assert.equal(read!.iteration, 3);
+    });
+
+    it('preserves iteration across phase updates', async () => {
+      await createSession(tmpDir, 'init', 2);
+      await updateSessionPhase(tmpDir, 'run');
+
+      const read = await readSession(tmpDir);
+      assert.equal(read!.phase, 'run');
+      assert.equal(read!.iteration, 2);
+    });
+  });
+
+  describe('devloopVersion field', () => {
+    it('createSession records devloopVersion', async () => {
+      const session = await createSession(tmpDir, 'init');
+      assert.ok(session.devloopVersion);
+      assert.equal(typeof session.devloopVersion, 'string');
+
+      const read = await readSession(tmpDir);
+      assert.equal(read!.devloopVersion, session.devloopVersion);
+    });
+
+    it('readSession returns undefined for old sessions without devloopVersion', async () => {
+      const sessionDir = path.join(tmpDir, '.devloop');
+      await fs.mkdir(sessionDir, { recursive: true });
+      await fs.writeFile(
+        path.join(sessionDir, 'session.json'),
+        JSON.stringify({ phase: 'run', sessionId: null, lastIteration: 0, startedAt: '2025-01-01', iteration: 1 }),
+        'utf-8'
+      );
+      const session = await readSession(tmpDir);
+      assert.ok(session);
+      assert.equal(session!.devloopVersion, undefined);
     });
   });
 });

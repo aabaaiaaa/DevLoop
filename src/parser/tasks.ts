@@ -1,29 +1,29 @@
 import * as fs from 'fs/promises';
-import { Task, Requirements, TaskStatus, TaskPriority } from '../types/index.js';
+import { Task, TaskList, TaskStatus } from '../types/index.js';
 
 const TASK_REGEX = /^### (TASK-\d+): (.+)$/;
 const STATUS_REGEX = /^\s*-\s*\*\*Status\*\*:\s*(pending|in-progress|done)/i;
-const PRIORITY_REGEX = /^\s*-\s*\*\*Priority\*\*:\s*(high|medium|low)/i;
 const DEPS_REGEX = /^\s*-\s*\*\*Dependencies\*\*:\s*(.+)/i;
 const DESC_REGEX = /^\s*-\s*\*\*Description\*\*:\s*(.+)/i;
+const VERIFICATION_REGEX = /^\s*-\s*\*\*Verification\*\*:\s*(.+)/i;
 
-export async function parseRequirements(filePath: string): Promise<Requirements> {
+export async function parseTasks(filePath: string): Promise<TaskList> {
   const content = await fs.readFile(filePath, 'utf-8');
-  return parseRequirementsContent(content);
+  return parseTasksContent(content);
 }
 
-export function parseRequirementsContent(content: string): Requirements {
+export function parseTasksContent(content: string): TaskList {
   const lines = content.split('\n').map(l => l.replace(/\r$/, ''));
 
   const tasks: Task[] = [];
   let currentTask: Partial<Task> | null = null;
 
-  // Parse metadata from header - try multiple formats
+  // Parse metadata from header
   const projectMatch = content.match(/\*\*Project\*\*:\s*(.+)/);
   const createdMatch = content.match(/\*\*Created\*\*:\s*(.+)/);
   const authorMatch = content.match(/\*\*Author\*\*:\s*(.+)/);
 
-  // Also try to get project name from markdown title (# ProjectName - ...) or (# ProjectName)
+  // Also try to get project name from markdown title
   const titleMatch = content.match(/^#\s+([^-\n]+)/m);
   const projectName = projectMatch?.[1]?.trim() || titleMatch?.[1]?.trim() || 'Unknown Project';
 
@@ -37,9 +37,9 @@ export function parseRequirementsContent(content: string): Requirements {
         id: taskMatch[1],
         title: taskMatch[2],
         status: 'pending',
-        priority: 'medium',
         dependencies: [],
-        description: ''
+        description: '',
+        verification: ''
       };
       continue;
     }
@@ -48,12 +48,6 @@ export function parseRequirementsContent(content: string): Requirements {
       const statusMatch = line.match(STATUS_REGEX);
       if (statusMatch) {
         currentTask.status = statusMatch[1].toLowerCase() as TaskStatus;
-        continue;
-      }
-
-      const priorityMatch = line.match(PRIORITY_REGEX);
-      if (priorityMatch) {
-        currentTask.priority = priorityMatch[1].toLowerCase() as TaskPriority;
         continue;
       }
 
@@ -69,6 +63,12 @@ export function parseRequirementsContent(content: string): Requirements {
       const descMatch = line.match(DESC_REGEX);
       if (descMatch) {
         currentTask.description = descMatch[1].trim();
+        continue;
+      }
+
+      const verifyMatch = line.match(VERIFICATION_REGEX);
+      if (verifyMatch) {
+        currentTask.verification = verifyMatch[1].trim();
         continue;
       }
     }
@@ -87,26 +87,21 @@ export function parseRequirementsContent(content: string): Requirements {
   };
 }
 
-export function getNextTask(requirements: Requirements): Task | null {
+export function getNextTask(taskList: TaskList): Task | null {
   const completedIds = new Set(
-    requirements.tasks.filter(t => t.status === 'done').map(t => t.id)
+    taskList.tasks.filter(t => t.status === 'done').map(t => t.id)
   );
 
   // In-progress tasks take priority (interrupted work that needs to be retried)
-  const inProgressTasks = requirements.tasks.filter(t => t.status === 'in-progress');
+  const inProgressTasks = taskList.tasks.filter(t => t.status === 'in-progress');
   if (inProgressTasks.length > 0) {
     return inProgressTasks[0];
   }
 
-  // Sort by priority (high > medium > low), then by task ID
-  const priorityOrder = { high: 0, medium: 1, low: 2 };
-  const pendingTasks = requirements.tasks
+  // Sort pending tasks by task ID (dependencies handle ordering)
+  const pendingTasks = taskList.tasks
     .filter(t => t.status === 'pending')
-    .sort((a, b) => {
-      const priorityDiff = priorityOrder[a.priority] - priorityOrder[b.priority];
-      if (priorityDiff !== 0) return priorityDiff;
-      return a.id.localeCompare(b.id);
-    });
+    .sort((a, b) => a.id.localeCompare(b.id));
 
   // Find first pending task whose dependencies are all done
   for (const task of pendingTasks) {
@@ -123,63 +118,36 @@ export async function updateTaskStatus(
   filePath: string,
   taskId: string,
   newStatus: TaskStatus
-): Promise<void> {
+): Promise<boolean> {
   const content = await fs.readFile(filePath, 'utf-8');
-  const lines = content.split('\n');
+  // Normalize CRLF to LF before processing
+  const normalized = content.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
 
   const taskHeaderRegex = new RegExp(`^### ${taskId}:`);
   let foundTask = false;
 
   for (let i = 0; i < lines.length; i++) {
-    const clean = lines[i].replace(/\r$/, '');
-    if (taskHeaderRegex.test(clean)) {
+    if (taskHeaderRegex.test(lines[i])) {
       foundTask = true;
       continue;
     }
     if (foundTask) {
       // If we hit another task header, stop searching
-      if (TASK_REGEX.test(clean)) break;
+      if (TASK_REGEX.test(lines[i])) break;
 
-      const statusMatch = clean.match(STATUS_REGEX);
+      const statusMatch = lines[i].match(STATUS_REGEX);
       if (statusMatch) {
         lines[i] = lines[i].replace(
           /\*\*Status\*\*:\s*(pending|in-progress|done)/i,
           `**Status**: ${newStatus}`
         );
         await fs.writeFile(filePath, lines.join('\n'), 'utf-8');
-        return;
+        return true;
       }
     }
   }
+
+  return false;
 }
 
-export function generateRequirementsTemplate(projectName: string): string {
-  const today = new Date().toISOString().split('T')[0];
-  return `# Project Requirements
-
-## Metadata
-- **Project**: ${projectName}
-- **Created**: ${today}
-- **Author**: Developer
-
-## Tasks
-
-### TASK-001: Example task one
-- **Status**: pending
-- **Priority**: high
-- **Dependencies**: none
-- **Description**: This is an example task. Replace with your actual task description.
-
-### TASK-002: Example task two
-- **Status**: pending
-- **Priority**: medium
-- **Dependencies**: TASK-001
-- **Description**: This task depends on TASK-001. It will only be worked on after TASK-001 is complete.
-
-### TASK-003: Example task three
-- **Status**: pending
-- **Priority**: low
-- **Dependencies**: none
-- **Description**: This is an independent task with no dependencies.
-`;
-}

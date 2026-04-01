@@ -1,18 +1,17 @@
 export type TaskStatus = 'pending' | 'in-progress' | 'done';
-export type TaskPriority = 'high' | 'medium' | 'low';
-export type ExitStatus = 'success' | 'error' | 'partial' | 'interrupted';
+export type ExitStatus = 'success' | 'error';
 export type SessionPhase = 'init' | 'run';
 
 export interface Task {
   id: string;
   title: string;
   status: TaskStatus;
-  priority: TaskPriority;
   dependencies: string[];
   description: string;
+  verification: string;
 }
 
-export interface Requirements {
+export interface TaskList {
   projectName: string;
   created: string;
   author: string;
@@ -22,6 +21,7 @@ export interface Requirements {
 export interface IterationLog {
   iteration: number;
   timestamp: string;
+  taskAttempted?: string;
   taskCompleted: string | null;
   summary: string;
   duration: string;
@@ -52,6 +52,8 @@ export interface Session {
   lastIteration: number;
   startedAt: string;
   activeTask?: ActiveTask | null;
+  iteration: number;  // 1-based requirements iteration count
+  devloopVersion?: string;
 }
 
 export interface GlobalConfig {
@@ -62,14 +64,14 @@ export interface GlobalConfig {
 export interface DevLoopConfig {
   maxIterations: number;
   requirementsPath: string;
+  tasksPath: string;
   progressPath: string;
   workspacePath: string;
   verbose: boolean;
   dryRun: boolean;
   tokenLimit?: number;  // Stop if session tokens exceed this limit
   costLimit?: number;   // Stop if session cost (USD) exceeds this limit
-  featureName?: string;  // Optional feature name for feature mode
-  sessionAction?: 'create' | 'update' | 'create-feature' | 'none';  // Session modification to perform after uncommitted check
+  sessionAction?: 'create' | 'update' | 'none';  // Session modification to perform after uncommitted check
 }
 
 export type ClaudeErrorType =
@@ -92,6 +94,7 @@ export interface TokenUsage {
 export interface ClaudeResult {
   success: boolean;
   output: string;
+  rawOutput: string;
   error?: string;
   errorType?: ClaudeErrorType;
   duration: number;
@@ -101,5 +104,7 @@ export interface ClaudeResult {
   signal?: string | null;
 }
 
-// Re-export feature types
-export * from './feature.js';
+export interface WorkspaceConfig {
+  /** Format for all DevLoop commits. Use {action} placeholder. */
+  devloopCommitFormat?: string;
+}

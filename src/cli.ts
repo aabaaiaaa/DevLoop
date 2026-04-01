@@ -1,28 +1,25 @@
 import { Command } from 'commander';
-import { createRequire } from 'module';
 import { initCommand } from './commands/init.js';
 import { continueCommand } from './commands/continue.js';
 import { runCommand } from './commands/run.js';
 import { statusCommand } from './commands/status.js';
 import { workspaceCommand } from './commands/workspace.js';
-import { featureListCommand, featureStatusCommand } from './commands/feature.js';
 import { configSetCommand, configGetCommand, configUnsetCommand, configListCommand } from './commands/config.js';
+import { getVersion } from './core/version.js';
 
-const require = createRequire(import.meta.url);
-const { version } = require('../package.json');
+const version = getVersion();
 
 const program = new Command();
 
 program
   .name('devloop')
   .description('Automate iterative development with Claude Code')
-  .version(version);
+  .version(version, '-v, --version');
 
 program
   .command('init')
   .description('Create requirements with interactive Claude session')
   .option('-w, --workspace <path>', 'Workspace directory')
-  .option('--feature <name>', 'Feature mode: create requirements/<name>.md')
   .option('-f, --force', 'Overwrite existing requirements')
   .action(initCommand);
 
@@ -30,22 +27,20 @@ program
   .command('continue')
   .description('Resume work on requirements or task execution')
   .option('-w, --workspace <path>', 'Workspace directory')
-  .option('--feature <name>', 'Feature mode: work on specific feature')
-  .option('-n, --max-iterations <number>', 'Maximum iterations for run', '10')
+  .option('-i, --max-iterations <number>', 'Maximum iterations for run (ceiling: 1000)', '100')
   .option('-t, --token-limit <number>', 'Stop when cumulative tokens exceed this limit')
-  .option('-c, --cost-limit <number>', 'Stop when session cost (USD) exceeds this limit')
-  .option('-v, --verbose', 'Verbose output')
+  .option('-c, --cost-limit <number>', 'Stop when session cost (USD) exceeds this limit (default: $10, ceiling: $500)')
+  .option('--verbose', 'Verbose output (show Claude raw output)')
   .action(continueCommand);
 
 program
   .command('run')
   .description('Start the task execution loop')
   .option('-w, --workspace <path>', 'Workspace directory')
-  .option('--feature <name>', 'Feature mode: run specific feature tasks')
-  .option('-n, --max-iterations <number>', 'Maximum iterations', '10')
+  .option('-i, --max-iterations <number>', 'Maximum iterations (ceiling: 1000)', '100')
   .option('-t, --token-limit <number>', 'Stop when cumulative tokens exceed this limit')
-  .option('-c, --cost-limit <number>', 'Stop when session cost (USD) exceeds this limit')
-  .option('-v, --verbose', 'Verbose output')
+  .option('-c, --cost-limit <number>', 'Stop when session cost (USD) exceeds this limit (default: $10, ceiling: $500)')
+  .option('--verbose', 'Verbose output (show Claude raw output)')
   .option('--dry-run', 'Show what would be done without executing')
   .action(runCommand);
 
@@ -53,25 +48,8 @@ program
   .command('status')
   .description('Show current progress')
   .option('-w, --workspace <path>', 'Workspace directory')
-  .option('--feature <name>', 'Feature mode: show feature status')
   .option('--json', 'Output as JSON')
   .action(statusCommand);
-
-const featureCommand = program
-  .command('feature')
-  .description('Manage features');
-
-featureCommand
-  .command('list')
-  .description('List all features')
-  .option('-w, --workspace <path>', 'Workspace directory')
-  .action(featureListCommand);
-
-featureCommand
-  .command('status')
-  .description('Show summary of all features')
-  .option('-w, --workspace <path>', 'Workspace directory')
-  .action(featureStatusCommand);
 
 const configCommand = program
   .command('config')

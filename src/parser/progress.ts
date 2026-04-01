@@ -27,6 +27,7 @@ export function parseProgressContent(content: string): Progress {
 
   for (const block of iterationBlocks) {
     const headerMatch = block.match(/### Iteration (\d+) - (.+)/);
+    const taskAttemptedMatch = block.match(/- \*\*Task Attempted\*\*: ([\w-]+)/);
     const taskMatch = block.match(/- \*\*Task Completed\*\*: ([\w-]+|none)/);
     const summaryMatch = block.match(/- \*\*Summary\*\*: (.+)/);
     const durationMatch = block.match(/- \*\*Duration\*\*: (.+)/);
@@ -40,6 +41,7 @@ export function parseProgressContent(content: string): Progress {
       const log: IterationLog = {
         iteration: parseInt(headerMatch[1], 10),
         timestamp: headerMatch[2].trim(),
+        taskAttempted: taskAttemptedMatch?.[1],
         taskCompleted: taskMatch[1] === 'none' ? null : taskMatch[1],
         summary: summaryMatch[1].trim(),
         duration: durationMatch[1].trim(),
@@ -97,6 +99,7 @@ export function generateProgressContent(
 
   for (const iter of iterations) {
     content += `### Iteration ${iter.iteration} - ${iter.timestamp}
+- **Task Attempted**: ${iter.taskAttempted || iter.taskCompleted || 'unknown'}
 - **Task Completed**: ${iter.taskCompleted || 'none'}
 - **Summary**: ${iter.summary}
 - **Duration**: ${iter.duration}
@@ -133,7 +136,7 @@ export async function writeProgress(filePath: string, progress: Progress): Promi
     progress.completed,
     progress.iterations
   );
-  // Ensure directory exists (for feature mode progress files in progress/ folder)
+  // Ensure directory exists
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, content, 'utf-8');
 }
@@ -166,10 +169,12 @@ export async function appendIteration(
   }
 
   progress.iterations.push(iteration);
-  if (iteration.exitStatus === 'success' && iteration.taskCompleted) {
-    progress.completed++;
-    progress.remaining--;
-  }
+
+  // Recalculate completed from unique task IDs to avoid double-counting
+  const completedIds = getCompletedTaskIds(progress);
+  progress.totalTasks = totalTasks;
+  progress.completed = completedIds.size;
+  progress.remaining = totalTasks - completedIds.size;
   progress.lastUpdated = new Date().toISOString();
 
   await writeProgress(filePath, progress);

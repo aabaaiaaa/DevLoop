@@ -15,27 +15,27 @@ After changes, run `npm run build` to update the `dist/` folder. The CLI is glob
 
 ## Architecture
 
-DevLoop is a CLI tool that automates iterative development by orchestrating Claude Code to complete tasks from a requirements document.
+DevLoop is a CLI tool that automates iterative development by orchestrating Claude Code to complete tasks from a task list.
 
 ### Two Operational Modes
 
-1. **Interactive Mode** (`init`, `continue` → "Continue working on requirements"): Spawns Claude CLI with `stdio: 'inherit'` for user interaction. Used for creating/refining `.devloop/requirements.md`.
+1. **Interactive Mode** (`init`, `continue` → "Continue working on requirements"): Spawns Claude CLI with `stdio: 'inherit'` for user interaction. Used for creating/refining `.devloop/requirements.md` and generating `.devloop/tasks.md`.
 
 2. **Automated Mode** (`run`): Spawns Claude CLI with `-p` flag for non-interactive task execution. Each iteration is a fresh Claude context. Uses `--add-dir` to restrict file operations to workspace.
 
 ### Init Behavior
 
-The `init` command handles three scenarios (same logic for both legacy and feature mode):
-- **Fresh init**: No requirements file exists → creates template and session
-- **Adopt existing**: Requirements file exists but no session → keeps existing requirements, creates session and `.claude/CLAUDE.md` infrastructure
+The `init` command follows a 3-phase workflow:
+1. **Discovery**: Claude explores the project scope through conversation. For open-ended questions (features, user flows, edge cases) Claude uses natural conversation. For standard technical choices (language, framework, testing approach, etc.) Claude is instructed to use the `AskUserQuestion` tool to present selectable options. Once discovery is complete, Claude reviews for inconsistencies and gaps before proceeding.
+2. **Write requirements.md**: Claude writes `.devloop/requirements.md` — a free-form, human-readable planning document describing the project
+3. **Generate tasks.md**: Claude generates `.devloop/tasks.md` — the machine-parsed task list derived from the requirements. After writing both documents, Claude tells the user to exit the session (Ctrl+C or /exit) so DevLoop can commit the files.
+
+The command handles three scenarios:
+- **Fresh init**: No requirements file exists → runs the 3-phase workflow and creates session
+- **Adopt existing**: Requirements file exists but no session → keeps existing files, creates session and `.claude/CLAUDE.md` infrastructure
 - **Already initialized**: Both exist → suggests using `continue` or `--force`
 
-This allows users who manually create a requirements file to run `devloop init` to set up the infrastructure needed for `devloop run`.
-
-In **feature mode** (`--feature <name>`), files are scoped per feature:
-- Requirements: `.devloop/requirements/<name>.md`
-- Progress: `.devloop/progress/<name>.md`
-- Session: `.devloop/features/<name>.json`
+This allows users who manually create requirements and task files to run `devloop init` to set up the infrastructure needed for `devloop run`.
 
 After creating the session, `init` also:
 - Detects commit hooks from commitlint/husky/git hooks
@@ -52,64 +52,76 @@ After the interactive Claude session ends:
 ```
 cli.ts → commands/*.ts → core/loop.ts → core/claude.ts
                               ↓
-                    parser/requirements.ts (find next task)
+                    parser/tasks.ts (parse tasks.md, find next task)
                               ↓
                     parser/progress.ts (log iteration)
 ```
 
 ### Key Abstractions
 
-- **Workspace**: A directory containing `.devloop/` (with `requirements.md`, `progress.md`, `session.json`) and `.claude/` (with `CLAUDE.md`, `settings.json`). Resolved via: CLI flag → global config → cwd.
-- **Session**: Persisted state in `.devloop/session.json` tracking phase (`init`/`run`) and iteration count.
+- **Workspace**: A directory containing `.devloop/` (with `requirements.md`, `tasks.md`, `progress.md`, `session.json`) and `.claude/` (with `CLAUDE.md`, `settings.json`). Resolved via: CLI flag → global config → cwd.
+- **Session**: Persisted state in `.devloop/session.json` tracking phase (`init`/`run`), iteration count, and the DevLoop version that created it (`devloopVersion`).
 - **Global Config**: `~/.devloop/config.json` stores default workspace and settings.
 
 ### Document Formats
 
-Tasks in `.devloop/requirements.md` follow this structure (regex-parsed in `parser/requirements.ts`):
+DevLoop uses two separate documents:
+
+- **`.devloop/requirements.md`**: A free-form, human-readable planning document. This is a narrative description of the project — goals, architecture decisions, constraints, etc. It is not parsed by the task engine.
+- **`.devloop/tasks.md`**: The machine-parsed task list. This is what the run loop reads to find and execute tasks.
+
+DevLoop also generates per-task log files in `.devloop/logs/TASK-XXX.log` containing the prompt sent to Claude and Claude's full raw output (stream-json format). These are overwritten on retry so only the latest attempt is kept.
+
+Tasks in `.devloop/tasks.md` follow this structure (regex-parsed in `parser/tasks.ts`):
 ```markdown
 ### TASK-001: Title
 - **Status**: pending|in-progress|done
-- **Priority**: high|medium|low
 - **Dependencies**: none|TASK-XXX, TASK-YYY
 - **Description**: What to do
+- **Verification**: How to confirm it's done
 ```
 
 Task selection (`getNextTask`) returns the next task to work on:
 1. In-progress tasks first (interrupted work that needs retrying)
-2. Then pending tasks, sorted by priority (high > medium > low) then ID
+2. Then pending tasks, sorted by task ID
 3. Only pending tasks whose dependencies are all `done` are eligible
 
-During execution, tasks transition: `pending` → `in-progress` (before Claude starts) → `done` (on success) or back to `pending` (on failure). If the run is stopped gracefully (Q key) mid-task and Claude succeeds, the task is marked `done`.
+When a task was previously interrupted (in-progress with an existing progress log), Claude receives context about the previous attempt so it can build on partial work rather than starting from scratch.
+
+During execution, tasks transition: `pending` → `in-progress` (before Claude starts) → `done` (on success). On failure, tasks stay `in-progress` so they are retried next iteration (`getNextTask` prioritizes in-progress tasks). If the run is stopped gracefully (Q key) mid-task and Claude succeeds, the task is marked `done`.
 
 ### Status Cross-Reference
 
-At the start of each run, the loop cross-references `requirements.md` against `progress.md` to fix inconsistencies (e.g., from crashes or interrupted runs):
-- Task marked `done` in requirements but **no completion log** in progress → reverted to `pending`
-- Task marked `in-progress` in requirements but **has a completion log** in progress → promoted to `done`
+At the start of each run, the loop cross-references `tasks.md` against `progress.md` to fix inconsistencies (e.g., from crashes or interrupted runs):
+- Task marked `done` in tasks but **no completion log** in progress → reverted to `pending`
+- Task marked `in-progress` in tasks but **has a completion log** in progress → promoted to `done`
+- Task marked `pending` in tasks but **has a completion log** in progress → promoted to `done`
 
 ### CRLF Handling
 
-Parsers for `requirements.md` and `progress.md` normalize CRLF line endings to LF before regex matching. This ensures DevLoop works correctly on Windows even if files are edited with tools that save with CRLF endings.
+Parsers for `tasks.md` and `progress.md` normalize CRLF line endings to LF before regex matching. This ensures DevLoop works correctly on Windows even if files are edited with tools that save with CRLF endings.
 
 ### Safety
 
 Automated mode uses `--add-dir <workspace>` to restrict Claude's file operations. The prompt explicitly states workspace boundaries. A `.claude/settings.json` is generated with permission rules.
 
+Additionally, `.devloop/` and `.claude/` directories are deny-listed in `settings.json` during automated runs, preventing Claude from editing DevLoop's own configuration, task definitions, or progress files.
+
 ### Progress Indicators
 
 The run loop provides visual feedback:
 - **Terminal title**: Updated via ANSI escape sequence (`\x1b]0;TITLE\x07`) to show iteration/task/progress
-- **Timed spinner**: Uses `ora` with a 1-second interval to show elapsed time during task execution
+- **Timed spinner**: Built-in spinner (`core/spinner.ts`) with a 1-second interval to show elapsed time and current activity during task execution
 - Format: `DevLoop: {iteration}/{max} - {taskId} ({completed}/{total} done)`
 
 ### Graceful Shutdown
 
-The run loop uses **raw stdin keypresses** (not SIGINT) for graceful shutdown, avoiding the problem of SIGINT propagating to the child Claude process and killing it mid-task:
+The run loop uses **stdin keypresses** (not SIGINT) for graceful shutdown, avoiding the problem of SIGINT propagating to the child Claude process and killing it mid-task:
 
-- **Q key**: Sets `stopRequested` flag. Current task runs to completion, then the loop stops. If the task succeeds, it is marked as done; work is not lost.
+- **Q key**: Sets `stopRequested` flag. The spinner is paused and a persistent `>> Graceful stop requested` message is displayed via `stopAndPersist`, then the spinner resumes. The current task runs to completion, then the loop stops. If the task succeeds, it is marked as done; work is not lost. The `activeSpinner` module-level variable gives the `onData` handler access to the spinner so the message is visible immediately (plain `console.log` gets overwritten by spinner redraws).
 - **Ctrl+C**: Force stop. In raw mode this is handled as a keypress (`\x03`), calling `process.exit(1)`. This kills everything including the Claude child process.
 
-Stdin is put into raw mode (`setRawMode(true)`) at loop start and restored on cleanup. Only works when stdin is a TTY; non-TTY environments skip keypress handling.
+When stdin is a TTY, raw mode (`setRawMode(true)`) is used so keypresses arrive immediately. On Windows (especially Git Bash/mintty), stdin may not be detected as a TTY; in that case a line-buffered fallback is used (`q` + Enter). Raw mode is defensively re-enabled after each child process spawn, since spawning `cmd.exe` on Windows can reset the console input mode.
 
 ### Interrupted Work Recovery
 
@@ -139,8 +151,47 @@ DevLoop tracks API token usage via Claude's `--output-format stream-json` flag:
 - **IterationLog.tokenUsage**: Persisted to `.devloop/progress.md` for each iteration
 - **Session vs Project tracking**: Loop tracks both session tokens (current run) and project tokens (all-time from `.devloop/progress.md`)
 - **Token limit**: `DevLoopConfig.tokenLimit` stops the loop when the current session exceeds the threshold (not cumulative across all runs)
+- **Cost limit**: `DevLoopConfig.costLimit` stops the loop when session cost exceeds the threshold. Default: `$10`. Hard ceiling: `$500`.
+- **Iteration ceiling**: `maxIterations` defaults to `100` with a hard ceiling of `1000`, clamped in `buildRunConfig()`.
 - **Detailed breakdown**: Displays individual token counts (input, output, cache write, cache read) and blended price per million tokens
 - **Price per million**: Calculated as `(cost / tokens) * 1,000,000` - a blended rate useful for gauging efficiency
+
+### Run Statistics
+
+When the run loop completes (all tasks done, Q key, cost/token limit, or API error), `displayRunStatistics()` in `loop.ts` shows a detailed summary:
+
+- **Duration and iteration counts**: Wall-clock time, successful/failed iteration counts
+- **Average time per task**: Computed from successful iterations only
+- **Longest/shortest tasks**: By duration, with task IDs and titles (skipped if ≤1 task)
+- **Failure analysis**: Per-task failure counts, whether each was eventually overcome ("succeeded" vs "still in-progress"), and error type breakdown
+- **Token/cost summary**: Session totals and average cost per task
+
+Timing data is collected in an `IterationTiming[]` array during the run (raw milliseconds), avoiding the need to parse formatted duration strings from progress.md.
+
+The `IterationLog` type includes a `taskAttempted` field that records which task was targeted in each iteration, even on failure. This enables failure correlation — determining whether a failed task was later retried and succeeded.
+
+### Task Logging
+
+After each iteration, Claude's full output is written to `.devloop/logs/TASK-XXX.log`. Each log file contains:
+- Task metadata (ID, title, iteration, timestamp, duration, result)
+- The full prompt sent to Claude
+- Claude's raw stream-json output (all tool calls, reasoning, content blocks)
+- Claude's final result text
+
+Log files are overwritten on retry (same task ID = same file), so only the latest attempt is kept. The `writeTaskLog()` function in `loop.ts` handles this, with errors logged silently to avoid disrupting the run.
+
+### Final Code Review
+
+When all tasks complete, `runFinalReview()` in `loop.ts` automatically invokes Claude one more time to review the entire project:
+
+- Cross-references requirements against the implementation, flagging gaps or scope creep
+- Reviews code quality, error handling, and security
+- Checks test coverage adequacy
+- Provides recommendations and future considerations (next features, tech debt, architectural notes)
+
+The report is written to `.devloop/review.md` and automatically opened in the user's default application. It is committed to git and archived alongside other files when starting a new iteration.
+
+The review only runs when genuinely all tasks are complete — not on partial stops (Q key, cost limit, iteration limit, API errors). The `invoke` function is used (respects `overrides.invoker` for testing) and file opening is skipped during tests (via `skipStdin`/`skipOpen`).
 
 ### API Error Classification
 
@@ -175,4 +226,44 @@ devloop config list  # Show current config
 3. Retries until successful or user skips
 4. Saves the format for future commits
 
+### Iterative Requirements
+
+DevLoop supports iterating on requirements through `devloop continue`:
+- **Option 1**: Continue working on current requirements (refine with Claude)
+- **Option 2**: Continue running tasks
+- **Option 3**: Archive and start new requirements (creates a new iteration)
+
+When archiving, the current `requirements.md`, `tasks.md`, `progress.md`, and `review.md` (if present) are copied to `.devloop/archive/iteration-{N}/`, then tasks, progress, and review are deleted so the next iteration starts fresh. Claude is spawned with prior work context to create new requirements and tasks.
+
+**Prior context optimization**: To avoid bloating the CLAUDE.md with large task lists, the prior context includes only task titles (not full descriptions/verification steps). Progress summaries are excluded entirely — Claude only needs the requirements and task names to understand what was built.
+
+The `Session` type has an `iteration` field (1-based, defaults to 1 for backward compat). `devloop status` displays the iteration number when > 1.
+
 **Session file handling**: Changes to `.devloop/` and `.claude/` are excluded from the uncommitted changes check that detects interrupted work, so they don't trigger false positives. These files are still committed as part of regular iteration commits.
+
+### Version Tracking
+
+The `Session` type includes a `devloopVersion` field that records the DevLoop version (from `package.json`) when a session is created. This enables future compatibility checks when a workspace created by one version is used with another.
+
+- **Recording**: `createSession()` in `session.ts` automatically sets `devloopVersion` via `getVersion()` from `core/version.ts`
+- **Display**: `devloop status` shows the version that created the session (or "unknown (pre-3.0)" for old sessions)
+- **Backward compat**: Old session files without the field parse as `devloopVersion: undefined`
+- **Shared helper**: `getVersion()` in `core/version.ts` reads the version from `package.json` using `createRequire`. Used by both `cli.ts` and `session.ts`.
+
+### Testing Infrastructure
+
+`runLoop` accepts an optional second parameter `RunLoopOverrides` (defined in `core/loop.ts`) for dependency injection in tests:
+
+- **`invoker`**: Replaces `invokeClaudeAutomated` — tests pass a mock that returns controlled `ClaudeResult` objects without spawning Claude CLI
+- **`skipStdin`**: Skips `setupGracefulShutdown()` and `ensureStdinListening()` — avoids stdin raw mode interference with the test runner
+- **`skipGit`**: Skips `ensureGitRepo()`, `commitIteration()`, `commitInterruptedWork()`, and `getUncommittedChanges()` — avoids git dependency in tests
+- **`stopAfterIterations`**: Sets `stopRequested = true` after N iterations complete — simulates Q key press for testing graceful shutdown behavior
+
+Production behavior is unchanged when `overrides` is undefined.
+
+Test fixtures in `test/fixtures/calculator.ts` provide:
+- `createCalculatorWorkspace()` / `createPhase2Tasks()` — set up a calculator project with tasks, dependencies, and session
+- `createMockInvoker()` — configurable mock with per-task result overrides and call tracking
+- `createFailThenSucceedMock()` — mock that fails a task N times then succeeds (for retry testing)
+
+Integration tests in `test/integration.test.ts` cover the full lifecycle: task execution in dependency order, retry on failure, archive + new iteration, cost/iteration limits, API error handling, graceful shutdown, status data, and final code review (creation, skipped on partial stop, archived correctly).

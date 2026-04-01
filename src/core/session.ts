@@ -1,13 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { Session, SessionPhase } from '../types/index.js';
-
-const DEFAULT_SESSION: Session = {
-  phase: 'init',
-  sessionId: null,
-  lastIteration: 0,
-  startedAt: new Date().toISOString()
-};
+import { getVersion } from './version.js';
 
 async function ensureSessionDir(workspace: string): Promise<void> {
   const sessionDir = path.join(workspace, '.devloop');
@@ -22,7 +16,12 @@ export async function readSession(workspace: string): Promise<Session | null> {
   const sessionPath = path.join(workspace, '.devloop', 'session.json');
   try {
     const content = await fs.readFile(sessionPath, 'utf-8');
-    return JSON.parse(content);
+    const parsed = JSON.parse(content);
+    // Backward compat: old sessions lack iteration field
+    if (parsed.iteration === undefined) {
+      parsed.iteration = 1;
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -34,12 +33,14 @@ export async function writeSession(workspace: string, session: Session): Promise
   await fs.writeFile(sessionPath, JSON.stringify(session, null, 2), 'utf-8');
 }
 
-export async function createSession(workspace: string, phase: SessionPhase): Promise<Session> {
+export async function createSession(workspace: string, phase: SessionPhase, iteration: number = 1): Promise<Session> {
   const session: Session = {
     phase,
     sessionId: null,
     lastIteration: 0,
-    startedAt: new Date().toISOString()
+    startedAt: new Date().toISOString(),
+    iteration,
+    devloopVersion: getVersion()
   };
   await writeSession(workspace, session);
   return session;

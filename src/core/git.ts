@@ -39,8 +39,8 @@ export async function saveDevloopCommitFormat(workspace: string, userMessage: st
     if (userMessage.includes('{action}')) {
       format = userMessage;
     } else {
-      // Can't infer a pattern, just save the literal message
-      // Future commits will use default format
+      // Can't infer a pattern — saves the literal message as the format.
+      // All future DevLoop commits will use this exact string.
       format = userMessage;
     }
   }
@@ -377,7 +377,8 @@ export async function ensureGitRepo(workspace: string, verbose: boolean = false)
   await ensureGitignore(workspace, verbose);
 
   // Make initial commit with all existing files
-  const commitResult = await gitCommit(workspace, 'DevLoop: Initial commit', verbose);
+  const commitMsg = await getDevloopCommitMessage(workspace, 'Initial commit');
+  const commitResult = await gitCommit(workspace, commitMsg, verbose);
 
   if (verbose) {
     if (commitResult.committed) {
@@ -420,7 +421,16 @@ export async function getUncommittedChanges(workspace: string, ignorePaths?: str
   let files = statusResult.output
     .split('\n')
     .filter(line => line.trim())
-    .map(line => line.substring(3).trim()); // Remove status prefix (e.g., " M ", "?? ")
+    .map(line => {
+      let filePart = line.substring(3).trim();
+      // Strip surrounding quotes (git quotes filenames with special characters)
+      if (filePart.startsWith('"') && filePart.endsWith('"')) {
+        filePart = filePart.slice(1, -1);
+      }
+      // Renamed files show as "old -> new"; use the new name
+      const arrowIndex = filePart.indexOf(' -> ');
+      return arrowIndex >= 0 ? filePart.substring(arrowIndex + 4) : filePart;
+    });
 
   // Filter out ignored paths
   if (ignorePaths && ignorePaths.length > 0) {
@@ -517,8 +527,7 @@ export async function commitIteration(
   taskId: string | null,
   taskTitle: string | null,
   success: boolean,
-  verbose: boolean = false,
-  featureName?: string
+  verbose: boolean = false
 ): Promise<{ committed: boolean; hookFailure?: boolean }> {
   const gitAvailable = await isGitAvailable();
   if (!gitAvailable) {
@@ -534,10 +543,9 @@ export async function commitIteration(
   const workspaceConfig = await readWorkspaceConfig(workspace);
 
   // Build the action description
-  const featurePrefix = featureName ? `[${featureName}] ` : '';
   const actionDescription = taskId && taskTitle
-    ? `${featurePrefix}${success ? 'Complete' : 'Attempted'} ${taskId} - ${taskTitle}`
-    : `${featurePrefix}Iteration ${iteration}`;
+    ? `${success ? 'Complete' : 'Attempted'} ${taskId} - ${taskTitle}`
+    : `Iteration ${iteration}`;
 
   // Use devloopCommitFormat if configured, otherwise default
   const message = formatDevloopCommit(workspaceConfig.devloopCommitFormat, actionDescription);

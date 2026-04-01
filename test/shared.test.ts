@@ -10,15 +10,14 @@ describe('buildRunConfig', () => {
 
   it('returns defaults for minimal options', () => {
     const config = buildRunConfig(baseOptions);
-    assert.equal(config.maxIterations, 10);
+    assert.equal(config.maxIterations, 100);
     assert.equal(config.workspacePath, '/home/user/project');
     assert.equal(config.requirementsPath, path.join('/home/user/project', '.devloop', 'requirements.md'));
     assert.equal(config.progressPath, path.join('/home/user/project', '.devloop', 'progress.md'));
     assert.equal(config.verbose, false);
     assert.equal(config.dryRun, false);
     assert.equal(config.tokenLimit, undefined);
-    assert.equal(config.costLimit, undefined);
-    assert.equal(config.featureName, undefined);
+    assert.equal(config.costLimit, 10);
     assert.equal(config.sessionAction, undefined);
   });
 
@@ -53,11 +52,6 @@ describe('buildRunConfig', () => {
     assert.equal(config.progressPath, '/custom/prog.md');
   });
 
-  it('passes through featureName', () => {
-    const config = buildRunConfig({ ...baseOptions, featureName: 'auth' });
-    assert.equal(config.featureName, 'auth');
-  });
-
   it('passes through sessionAction', () => {
     const config = buildRunConfig({ ...baseOptions, sessionAction: 'create' });
     assert.equal(config.sessionAction, 'create');
@@ -66,5 +60,15 @@ describe('buildRunConfig', () => {
   it('handles NaN maxIterations gracefully', () => {
     const config = buildRunConfig({ ...baseOptions, maxIterations: 'abc' });
     assert.ok(Number.isNaN(config.maxIterations));
+  });
+
+  it('clamps maxIterations to ceiling of 1000', () => {
+    const config = buildRunConfig({ ...baseOptions, maxIterations: '5000' });
+    assert.equal(config.maxIterations, 1000);
+  });
+
+  it('clamps costLimit to ceiling of 500', () => {
+    const config = buildRunConfig({ ...baseOptions, costLimit: '999' });
+    assert.equal(config.costLimit, 500);
   });
 });

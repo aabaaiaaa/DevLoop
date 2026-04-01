@@ -2,7 +2,7 @@
 
 Automate iterative development with Claude Code. DevLoop helps you break down projects into small tasks and automatically executes them in a loop using Claude.
 
-![DevLoop in action](https://raw.githubusercontent.com/aabaaiaaa/DevLoop/master/images/example-devloop-usage.png)
+![DevLoop in action](https://raw.githubusercontent.com/aabaaiaaa/DevLoop/master/images/example-devloop-usage-3.0.0.png)
 
 ## Why DevLoop?
 
@@ -10,12 +10,12 @@ DevLoop lets you build projects of any size in a fully unattended way — start 
 
 > **Warning:** DevLoop runs Claude Code with `--dangerously-skip-permissions`, which allows Claude to execute commands, write files, and make changes without prompting for confirmation. This is required for unattended operation but means Claude has broad access to your system.
 >
-> **Mitigation:** DevLoop uses `--add-dir <workspace>` to restrict Claude's file operations to your workspace directory, and generates a `.claude/settings.json` with permission rules that block dangerous commands. However, these are guardrails, not a sandbox. Review your `requirements.md` carefully before starting a long unattended run, and consider running in a VM or container for additional isolation.
+> **Mitigation:** DevLoop uses `--add-dir <workspace>` to restrict Claude's file operations to your workspace directory, and generates a `.claude/settings.json` with permission rules that block dangerous commands (including edits to `.devloop/` and `.claude/` directories). However, these are guardrails, not a sandbox. Review your `requirements.md` and `tasks.md` carefully before starting a long unattended run, and consider running in a VM or container for additional isolation.
 
 ## How It Works
 
-1. **Define requirements** - Use an interactive Claude session to break your project into small tasks (~30 min each)
-2. **Run the loop** - DevLoop picks the next task, spawns Claude to complete it, logs progress, and repeats
+1. **Define requirements** - Use an interactive Claude session to create a planning document (`requirements.md`) and a machine-parsed task list (`tasks.md`) with small tasks (~30 min each)
+2. **Run the loop** - DevLoop picks the next task from `tasks.md`, spawns Claude to complete it, logs progress, and repeats
 3. **Track progress** - View task status and iteration logs at any time
 
 Each iteration runs in a fresh Claude context, so you get consistent behavior without context buildup.
@@ -80,7 +80,7 @@ devloop init
 # 3. Check your tasks
 devloop status
 
-# 4. Run the loop (10 iterations by default)
+# 4. Run the loop ($10 cost limit by default)
 devloop run
 
 # 5. Come back later and continue
@@ -89,21 +89,21 @@ devloop continue
 
 ## Tips for `devloop init`
 
-When you run `devloop init`, DevLoop opens an interactive Claude session that guides you through a two-phase planning process. Here's what to expect:
+When you run `devloop init`, DevLoop opens an interactive Claude session that guides you through a 3-phase planning process (discovery, requirements, tasks). Here's what to expect:
 
 - **Claude will start by asking questions** — describe what you want to build, including any preferences for technologies, libraries, or approaches. Answer fully and don't rush; Claude needs to understand the full scope before writing anything.
-- **Don't ask Claude to start building the project.** The init session is only for creating the requirements document. Implementation happens later when you run `devloop run`. If Claude starts writing code or creating files, remind it to just write the requirements doc.
-- **Discuss testing early.** Tell Claude how you'd like the project tested (unit, integration, e2e, specific frameworks). Claude will run those tests automatically during implementation to catch bugs.
-- **Review the task list before confirming.** Claude will propose a task list for your review. Ask it to adjust priorities, split large tasks, or add missing steps. Once you confirm, Claude writes the requirements file.
-- **Exit when you're done** with Ctrl+C or `/exit`. DevLoop will commit the requirements and you can start running tasks.
+- **Don't ask Claude to start building the project.** The init session is only for creating the requirements and task documents. Implementation happens later when you run `devloop run`. If Claude starts writing code or creating files, remind it to just write the requirements and tasks.
+- **Discuss testing early.** Tell Claude how you'd like the project tested (unit, integration, e2e, specific frameworks). Claude will include verification steps in each task and run those tests automatically during implementation.
+- **Review the task list before confirming.** Claude will propose a task list for your review. Ask it to split large tasks, reorder them, or add missing steps. Once you confirm, Claude writes the requirements and task files.
+- **Exit when you're done** with Ctrl+C or `/exit`. DevLoop will commit the files and you can start running tasks.
 
 ## Commands
 
 ### `devloop init`
 
-Starts an interactive Claude session to create your `.devloop/requirements.md` file. Claude helps you break down your project into small, actionable tasks.
+Starts an interactive Claude session that follows a 3-phase workflow: discovery (understanding your project), writing `.devloop/requirements.md` (a free-form planning document), and generating `.devloop/tasks.md` (the machine-parsed task list). Claude helps you break down your project into small, actionable tasks.
 
-If a `.devloop/requirements.md` already exists but no session has been created, the command will **adopt** the existing file and set up the necessary infrastructure (session, `.claude/` files, git commit).
+If `.devloop/requirements.md` already exists but no session has been created, the command will **adopt** the existing files and set up the necessary infrastructure (session, `.claude/` files, git commit).
 
 ```bash
 devloop init                    # Use default/configured workspace
@@ -112,28 +112,33 @@ devloop init --force            # Overwrite existing requirements and reinitiali
 ```
 
 **Behavior with existing files:**
-- `.devloop/requirements.md` exists + no session → Adopts existing file, creates infrastructure
+- `.devloop/requirements.md` exists + no session → Adopts existing files, creates infrastructure
 - `.devloop/requirements.md` exists + session exists → Prompts to use `continue` or `--force`
-- No `.devloop/requirements.md` → Starts an interactive Claude session to create one
+- No `.devloop/requirements.md` → Starts the 3-phase interactive Claude session
 
 ### `devloop run`
 
-Executes tasks from `.devloop/requirements.md` in a loop. Each iteration:
-1. Parses requirements to find the next task (in-progress first, then pending by priority/dependencies)
+Executes tasks from `.devloop/tasks.md` in a loop. Each iteration:
+1. Parses `tasks.md` to find the next task (in-progress first, then pending by ID with dependencies respected)
 2. Marks the task as `in-progress` and spawns Claude with the task details
-3. On success, marks the task `done`; on failure, reverts to `pending` for retry
+3. On success, marks the task `done`; on failure, leaves as `in-progress` for retry
 4. Logs the result to `.devloop/progress.md`
-5. Repeats until all tasks done or max iterations reached
+5. Repeats until all tasks done, cost limit reached, or max iterations reached
 
 ```bash
-devloop run                     # Run with defaults (10 iterations)
-devloop run -n 5                # Limit to 5 iterations
+devloop run                     # Run with defaults ($10 cost limit, 100 max iterations)
+devloop run -i 5                # Limit to 5 iterations
 devloop run -t 500000           # Stop when session tokens exceed 500k
-devloop run -c 5                # Stop when session cost exceeds $5
-devloop run -v                  # Verbose output (show Claude's work)
+devloop run -c 20               # Stop when session cost exceeds $20
+devloop run --verbose           # Verbose output (show Claude's raw output)
 devloop run --dry-run           # Show what would run without executing
 devloop run -w ./my-project     # Specify workspace
 ```
+
+**Limits and ceilings:**
+- Default cost limit: **$10** per session (override with `-c`)
+- Default max iterations: **100** per session (override with `-i`)
+- Hard ceilings: **$500** cost, **1000** iterations (cannot be exceeded)
 
 ### `devloop status`
 
@@ -146,15 +151,16 @@ devloop status --json           # JSON output for scripting
 
 ### `devloop continue`
 
-Resume work after a break. Prompts you to choose:
+The main hub for ongoing work after `devloop init`. Prompts you to choose:
 - **Continue requirements** - Resume refining requirements with Claude
 - **Continue run** - Resume task execution from where you left off
+- **Archive and start new requirements** - Archive current iteration and plan the next phase (see [Iterations](#iterations))
 
 ```bash
 devloop continue
-devloop continue -n 20          # Continue run with 20 max iterations
+devloop continue -i 20          # Continue run with 20 max iterations
 devloop continue -t 500000      # Continue with token limit
-devloop continue -c 5           # Continue with $5 cost limit
+devloop continue -c 20          # Continue with $20 cost limit
 ```
 
 ### `devloop workspace`
@@ -173,46 +179,60 @@ DevLoop creates these files in your workspace:
 ```
 my-project/
 ├── .devloop/
-│   ├── requirements.md   # Your tasks (you + Claude create this)
+│   ├── requirements.md   # Free-form planning document (you + Claude create this)
+│   ├── tasks.md          # Machine-parsed task list (generated from requirements)
 │   ├── progress.md       # Iteration logs (auto-generated)
-│   ├── session.json      # Session state for resuming
-│   └── config.json       # Workspace config (commit format, etc.)
+│   ├── review.md         # Final code review report (auto-generated when all tasks complete)
+│   ├── session.json      # Session state, version tracking, crash recovery
+│   ├── config.json       # Workspace config (commit format, etc.)
+│   ├── debug.log         # Debug log for troubleshooting
+│   ├── logs/             # Per-task Claude output logs
+│   │   ├── TASK-001.log  # Full prompt + raw Claude output for each task
+│   │   └── TASK-002.log
+│   └── archive/          # Archived iterations (created by devloop continue)
+│       └── iteration-1/
+│           ├── requirements.md
+│           ├── tasks.md
+│           ├── progress.md
+│           └── review.md
 └── .claude/
     ├── CLAUDE.md         # Context for Claude (auto-generated)
     └── settings.json     # Claude permission rules (auto-generated)
 ```
 
-Cleanup: `rm -rf .devloop .claude` removes everything DevLoop created. DevLoop will also remind you of this when all tasks complete.
+Cleanup: `rm -rf .devloop .claude` removes everything DevLoop created.
 
 Global config is stored at `~/.devloop/config.json`.
 
 ## Task Format
 
-Tasks in `.devloop/requirements.md` follow this format:
+`.devloop/requirements.md` is a free-form planning document — a narrative description of the project, its goals, architecture decisions, and constraints. It is not parsed by the task engine.
+
+`.devloop/tasks.md` is the machine-parsed task list that DevLoop executes. Tasks follow this format:
 
 ```markdown
 ### TASK-001: Set up project structure
 - **Status**: pending
-- **Priority**: high
 - **Dependencies**: none
 - **Description**: Initialize with package.json and tsconfig.json.
+- **Verification**: Run `npm install` and `npx tsc --noEmit` successfully.
 
 ### TASK-002: Implement user authentication
 - **Status**: pending
-- **Priority**: high
 - **Dependencies**: TASK-001
 - **Description**: Create login endpoint with JWT tokens.
+- **Verification**: Run `npm test` and verify auth tests pass.
 ```
 
 - **Status**: `pending`, `in-progress`, or `done`
-- **Priority**: `high`, `medium`, or `low` (higher priority tasks run first)
 - **Dependencies**: `none` or comma-separated task IDs (e.g., `TASK-001, TASK-002`)
+- **Verification**: How to confirm the task is complete (e.g., test commands, expected output)
 
 ## Progress Indicators
 
 DevLoop provides visual feedback during execution:
 
-- **Terminal title**: Shows current iteration, task ID, and progress (e.g., "DevLoop: 3/10 - TASK-005 (2/12 done)")
+- **Terminal title**: Shows current iteration, task ID, and progress (e.g., "DevLoop: 3/100 - TASK-005 (2/12 done)")
 - **Animated spinner**: Displays elapsed time while Claude works on a task
 - **Final status**: Terminal title updates to show completion status
 
@@ -220,10 +240,10 @@ DevLoop provides visual feedback during execution:
 
 DevLoop supports graceful shutdown during task execution:
 
-- **Press Q**: Requests graceful stop — the current task runs to completion (and is marked as done if successful), then DevLoop stops before starting the next task
+- **Press Q** (or type `q` + Enter in non-TTY terminals): Requests graceful stop. A `>> Graceful stop requested` confirmation is displayed immediately. The current task runs to completion (and is marked as done if successful), then DevLoop stops before starting the next task.
 - **Ctrl+C**: Force stops immediately, killing the Claude process mid-task
 
-This allows you to stop the loop without interrupting Claude mid-task. A hint is shown before each task: `Press Q to stop after this task | Ctrl+C to force stop`.
+This allows you to stop the loop without interrupting Claude mid-task. A hint is shown before each task with the appropriate key for your terminal.
 
 ## Interrupted Work Recovery
 
@@ -265,6 +285,7 @@ When running automated tasks, DevLoop restricts Claude to your workspace:
 - Uses `--add-dir <workspace>` to limit file operations
 - Prompts explicitly state workspace boundaries
 - Dangerous commands (rm -rf /, sudo, etc.) are blocked in settings
+- `.devloop/` and `.claude/` directories are deny-listed, preventing Claude from editing DevLoop's own files during automated runs
 
 ## Token Tracking
 
@@ -273,10 +294,45 @@ DevLoop tracks API token usage across iterations:
 - **Per-iteration tracking**: Each iteration logs input tokens, output tokens, and cost
 - **Cumulative display**: After each task, shows running total of tokens used
 - **Token limits**: Use `-t, --token-limit` to stop before exceeding a token threshold
-- **Cost limits**: Use `-c, --cost-limit` to stop before exceeding a dollar amount
+- **Cost limits**: Default **$10** per session (override with `-c`), hard ceiling **$500**
+- **Iteration limits**: Default **100** per session (override with `-i`), hard ceiling **1000**
 - **Status display**: `devloop status` shows total tokens and cost for the project
 
 Token data is stored in `.devloop/progress.md` and persists across sessions.
+
+## Run Statistics
+
+When a run completes, DevLoop displays a statistics summary:
+
+- **Duration**: Total wall-clock time and average time per successful task
+- **Longest/shortest tasks**: Identifies which tasks took the most and least time
+- **Failure analysis**: Shows which tasks failed, how many attempts each took, and whether they were eventually completed
+- **Error breakdown**: Counts by error type (task_failure, rate_limit, etc.)
+- **Cost summary**: Session total and average cost per task
+
+## Task Logs
+
+Each task's full Claude interaction is saved to `.devloop/logs/TASK-XXX.log` for debugging and review. Each log includes:
+
+- The prompt sent to Claude
+- Claude's raw stream-json output (all tool calls and reasoning)
+- The final result text
+
+Logs are overwritten on retry, so only the latest attempt for each task is kept.
+
+## Final Code Review
+
+When all tasks complete, DevLoop automatically runs one final Claude invocation to review the entire project. The review report (`.devloop/review.md`) covers:
+
+- **Requirements vs implementation** — gaps, partial implementations, scope creep
+- **Code quality** — bugs, error handling, security concerns
+- **Testing** — coverage adequacy, untested edge cases
+- **Recommendations** — what to improve before production
+- **Future considerations** — next features, tech debt, architectural notes
+
+The report is automatically opened for the developer to read. It is committed to git and archived with other iteration files when starting a new iteration.
+
+The review only runs when all tasks are genuinely complete — not on partial stops (Q key, cost limit, etc.).
 
 ## API Error Handling
 
@@ -294,58 +350,52 @@ When `devloop status` is run after a failure, it displays:
 - Error summary and detailed message
 - Timestamp of the failure
 
-## Feature Mode
+## Iterations
 
-Feature mode lets you organize work into independent features, each with their own requirements, progress tracking, and session state. This is useful for larger projects where you want to work on multiple features in parallel without mixing their tasks.
+DevLoop supports iterating on your project through multiple requirement phases. After completing your initial tasks, use `devloop continue` to start a new iteration:
 
-### File Structure
-
-```
-my-project/
-└── .devloop/
-    ├── requirements/
-    │   ├── auth.md              # Feature-specific requirements
-    │   └── dashboard.md
-    ├── progress/
-    │   ├── auth.md              # Feature-specific progress
-    │   └── dashboard.md
-    └── features/
-        ├── auth.json        # Feature session state
-        └── dashboard.json
-```
-
-### Usage
-
-Use the `--feature <name>` flag on any command:
+1. **Archive current work** - Requirements, tasks, and progress are saved to `.devloop/archive/iteration-{N}/`
+2. **Plan next phase** - Claude opens with context about what was built, helping you plan the next set of requirements and tasks
+3. **Run again** - Execute the new tasks with `devloop run`
 
 ```bash
-devloop init --feature auth           # Create .devloop/requirements/auth.md
-devloop run --feature auth            # Run tasks for auth feature
-devloop continue --feature auth       # Continue auth feature
-devloop status --feature auth         # Check auth feature status
+# After all tasks complete (or whenever you want a fresh set of requirements):
+devloop continue
+# Choose option 3: "Archive and start new requirements"
+
+# Check your new tasks
+devloop status
+
+# Run the new iteration
+devloop run
 ```
 
-### Managing Features
+The archive option is always available — even if tasks remain incomplete. DevLoop will warn you and ask for confirmation before archiving unfinished work.
 
-```bash
-devloop feature list                  # List all features
-devloop feature status                # Summary of all features
-```
+`devloop status` shows the current iteration number and how many previous iterations are archived.
 
-### Quick Example
+## Dependencies
 
-```bash
-# Create two independent features
-devloop init --feature auth
-devloop init --feature dashboard
+DevLoop has a minimal dependency footprint for supply chain transparency.
 
-# Work on them independently
-devloop run --feature auth -n 5
-devloop run --feature dashboard -n 5
+### Production Dependencies (shipped to users)
 
-# Check overall status
-devloop feature status
-```
+| Package | Version | Sub-deps | Purpose |
+|---------|---------|----------|---------|
+| [chalk](https://www.npmjs.com/package/chalk) | ^5.4.0 | 0 | Terminal color output |
+| [commander](https://www.npmjs.com/package/commander) | ^13.0.0 | 0 | CLI argument parsing |
+
+**Total: 2 packages** with zero transitive dependencies. No native modules, no post-install scripts, no network access.
+
+The animated spinner (`src/core/spinner.ts`) is a built-in implementation with no external dependencies.
+
+### Dev Dependencies (not shipped)
+
+| Package | Purpose |
+|---------|---------|
+| @types/node | TypeScript type definitions |
+| typescript | TypeScript compiler (build time) |
+| tsx | TypeScript execution for dev/test |
 
 ## Requirements
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { parseRequirements, updateTaskStatus } from '../src/parser/requirements.js';
+import { parseTasks, updateTaskStatus } from '../src/parser/tasks.js';
 import { readProgress, writeProgress, getCompletedTaskIds } from '../src/parser/progress.js';
 import { Progress } from '../src/types/index.js';
 
@@ -16,7 +16,7 @@ import { Progress } from '../src/types/index.js';
 async function runRecovery(reqPath: string, progPath: string): Promise<string[]> {
   const progress = await readProgress(progPath);
   const completedIds = progress ? getCompletedTaskIds(progress) : new Set<string>();
-  const reqs = await parseRequirements(reqPath);
+  const reqs = await parseTasks(reqPath);
   const reverted: string[] = [];
 
   for (const task of reqs.tasks) {
@@ -55,7 +55,7 @@ describe('cross-reference recovery', () => {
     const reverted = await runRecovery(reqPath, progPath);
     assert.deepEqual(reverted, ['TASK-001']);
 
-    const reqs = await parseRequirements(reqPath);
+    const reqs = await parseTasks(reqPath);
     assert.equal(reqs.tasks[0].status, 'pending');
   });
 
@@ -81,7 +81,7 @@ describe('cross-reference recovery', () => {
     const reverted = await runRecovery(reqPath, progPath);
     assert.deepEqual(reverted, []);
 
-    const reqs = await parseRequirements(reqPath);
+    const reqs = await parseTasks(reqPath);
     assert.equal(reqs.tasks[0].status, 'done');
   });
 
@@ -119,7 +119,7 @@ describe('cross-reference recovery', () => {
     const reverted = await runRecovery(reqPath, progPath);
     assert.deepEqual(reverted, ['TASK-002']);
 
-    const reqs = await parseRequirements(reqPath);
+    const reqs = await parseTasks(reqPath);
     assert.equal(reqs.tasks[0].status, 'done');
     assert.equal(reqs.tasks[1].status, 'pending');
     assert.equal(reqs.tasks[2].status, 'pending');
@@ -149,7 +149,7 @@ describe('cross-reference recovery', () => {
     const reverted = await runRecovery(reqPath, progPath);
     assert.deepEqual(reverted, ['TASK-001', 'TASK-002', 'TASK-003']);
 
-    const reqs = await parseRequirements(reqPath);
+    const reqs = await parseTasks(reqPath);
     assert.ok(reqs.tasks.every(t => t.status === 'pending'));
   });
 
