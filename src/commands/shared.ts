@@ -64,6 +64,7 @@ export interface RunConfigOptions {
   tasksPath?: string;
   progressPath?: string;
   maxIterations?: string;
+  maxWorkers?: string;
   tokenLimit?: string;
   costLimit?: string;
   verbose?: boolean;
@@ -78,6 +79,8 @@ const MAX_ITERATIONS_CEILING = 1000;
 const MAX_COST_CEILING = 500;
 const DEFAULT_COST_LIMIT = 10;
 const DEFAULT_MAX_ITERATIONS = 100;
+const DEFAULT_MAX_WORKERS = 5;
+const MAX_WORKERS_CEILING = 20;
 
 export function buildRunConfig(options: RunConfigOptions): DevLoopConfig {
   const maxIterations = Math.min(
@@ -99,6 +102,10 @@ export function buildRunConfig(options: RunConfigOptions): DevLoopConfig {
     dryRun: options.dryRun || false,
     tokenLimit: options.tokenLimit ? parseInt(options.tokenLimit, 10) || undefined : undefined,
     costLimit,
+    maxWorkers: Math.min(
+      Math.max(1, parseInt(options.maxWorkers || String(DEFAULT_MAX_WORKERS), 10) || DEFAULT_MAX_WORKERS),
+      MAX_WORKERS_CEILING
+    ),
     sessionAction: options.sessionAction
   };
 }

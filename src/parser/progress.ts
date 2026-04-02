@@ -32,6 +32,8 @@ export function parseProgressContent(content: string): Progress {
     const summaryMatch = block.match(/- \*\*Summary\*\*: (.+)/);
     const durationMatch = block.match(/- \*\*Duration\*\*: (.+)/);
     const statusMatch = block.match(/- \*\*Exit Status\*\*: (\w+)/);
+    const workDurationMatch = block.match(/- \*\*Work Duration\*\*: ~(.+)/);
+    const verifyDurationMatch = block.match(/- \*\*Verification Duration\*\*: ~(.+)/);
     const errorTypeMatch = block.match(/- \*\*Error Type\*\*: (\w+)/);
     const errorDetailMatch = block.match(/- \*\*Error Detail\*\*:\s*\n```\n([\s\S]*?)\n```/);
     const tokensMatch = block.match(/- \*\*Tokens\*\*: ([\d,]+) total \(([\d,]+) in, ([\d,]+) out(?:, ([\d,]+) cache-create, ([\d,]+) cache-read)?\)/);
@@ -48,6 +50,12 @@ export function parseProgressContent(content: string): Progress {
         exitStatus: statusMatch[1] as ExitStatus
       };
 
+      if (workDurationMatch) {
+        log.workDuration = workDurationMatch[1].trim();
+      }
+      if (verifyDurationMatch) {
+        log.verificationDuration = verifyDurationMatch[1].trim();
+      }
       if (errorTypeMatch) {
         log.errorType = errorTypeMatch[1] as ClaudeErrorType;
       }
@@ -105,6 +113,12 @@ export function generateProgressContent(
 - **Duration**: ${iter.duration}
 - **Exit Status**: ${iter.exitStatus}
 `;
+
+    if (iter.workDuration && iter.verificationDuration) {
+      content += `- **Work Duration**: ~${iter.workDuration}
+- **Verification Duration**: ~${iter.verificationDuration}
+`;
+    }
 
     if (iter.tokenUsage) {
       content += `- **Tokens**: ${iter.tokenUsage.totalTokens.toLocaleString()} total (${iter.tokenUsage.inputTokens.toLocaleString()} in, ${iter.tokenUsage.outputTokens.toLocaleString()} out, ${iter.tokenUsage.cacheCreationTokens.toLocaleString()} cache-create, ${iter.tokenUsage.cacheReadTokens.toLocaleString()} cache-read)

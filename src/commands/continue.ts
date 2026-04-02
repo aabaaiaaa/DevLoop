@@ -15,6 +15,7 @@ import { ensureGitRepo } from '../core/git.js';
 interface ContinueOptions {
   workspace?: string;
   maxIterations?: string;
+  maxWorkers?: string;
   tokenLimit?: string;
   costLimit?: string;
   verbose?: boolean;
@@ -116,6 +117,7 @@ async function continueRun(workspace: string, options: ContinueOptions): Promise
   const config = buildRunConfig({
     workspace,
     maxIterations: options.maxIterations,
+    maxWorkers: options.maxWorkers,
     tokenLimit: options.tokenLimit,
     costLimit: options.costLimit,
     verbose: options.verbose,

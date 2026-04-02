@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { GlobalConfig } from '../types/index.js';
+import { GlobalConfig, ProjectUsage } from '../types/index.js';
 
 const CONFIG_DIR = path.join(os.homedir(), '.devloop');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
@@ -92,4 +92,59 @@ export async function writeWorkspaceConfig(workspace: string, config: import('..
   await fs.mkdir(devloopDir, { recursive: true });
 
   await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+}
+
+// --- Project-lifetime usage tracking ---
+
+const DEFAULT_USAGE: ProjectUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheCreationTokens: 0,
+  cacheReadTokens: 0,
+  totalTokens: 0,
+  costUsd: 0,
+  totalIterations: 0,
+  totalTasksCompleted: 0
+};
+
+function getUsagePath(workspace: string): string {
+  return path.join(workspace, '.devloop', 'usage.json');
+}
+
+/**
+ * Read cumulative project usage (persists across archives/iterations).
+ */
+export async function readProjectUsage(workspace: string): Promise<ProjectUsage> {
+  try {
+    const content = await fs.readFile(getUsagePath(workspace), 'utf-8');
+    return { ...DEFAULT_USAGE, ...JSON.parse(content) };
+  } catch {
+    return { ...DEFAULT_USAGE };
+  }
+}
+
+/**
+ * Add token/cost usage from a completed session to the project totals.
+ */
+export async function addProjectUsage(
+  workspace: string,
+  sessionTokens: { input: number; output: number; cacheWrite: number; cacheRead: number; total: number },
+  sessionCost: number,
+  iterationsRun: number,
+  tasksCompleted: number
+): Promise<ProjectUsage> {
+  const usage = await readProjectUsage(workspace);
+  usage.inputTokens += sessionTokens.input;
+  usage.outputTokens += sessionTokens.output;
+  usage.cacheCreationTokens += sessionTokens.cacheWrite;
+  usage.cacheReadTokens += sessionTokens.cacheRead;
+  usage.totalTokens += sessionTokens.total;
+  usage.costUsd += sessionCost;
+  usage.totalIterations += iterationsRun;
+  usage.totalTasksCompleted += tasksCompleted;
+
+  const usagePath = getUsagePath(workspace);
+  await fs.mkdir(path.dirname(usagePath), { recursive: true });
+  await fs.writeFile(usagePath, JSON.stringify(usage, null, 2), 'utf-8');
+  return usage;
 }

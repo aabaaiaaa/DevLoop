@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { Session, SessionPhase } from '../types/index.js';
+import { Session, SessionPhase, ActiveTask } from '../types/index.js';
 import { getVersion } from './version.js';
 
 async function ensureSessionDir(workspace: string): Promise<void> {
@@ -59,6 +59,45 @@ export async function updateSessionIteration(workspace: string, iteration: numbe
   if (session) {
     session.lastIteration = iteration;
     await writeSession(workspace, session);
+  }
+}
+
+/**
+ * Set the list of active tasks (parallel mode crash marker).
+ * Replaces the old single activeTask field.
+ */
+export async function setActiveTasks(workspace: string, tasks: ActiveTask[]): Promise<void> {
+  try {
+    const session = await readSession(workspace);
+    if (session) {
+      session.activeTasks = tasks.length > 0 ? tasks : undefined;
+      // Also set activeTask for backward compat (first task or null)
+      session.activeTask = tasks.length > 0 ? tasks[0] : null;
+      await writeSession(workspace, session);
+    }
+  } catch {
+    // Best-effort — don't break the loop on write failure
+  }
+}
+
+/**
+ * Get the list of active tasks from the session (parallel mode).
+ * Falls back to single activeTask for backward compat.
+ */
+export async function getActiveTasks(workspace: string): Promise<ActiveTask[]> {
+  try {
+    const session = await readSession(workspace);
+    if (!session) return [];
+    // Prefer activeTasks array, fall back to single activeTask
+    if (session.activeTasks && session.activeTasks.length > 0) {
+      return session.activeTasks;
+    }
+    if (session.activeTask) {
+      return [session.activeTask];
+    }
+    return [];
+  } catch {
+    return [];
   }
 }
 

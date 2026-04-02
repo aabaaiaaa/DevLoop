@@ -114,6 +114,44 @@ export function getNextTask(taskList: TaskList): Task | null {
   return null;
 }
 
+/**
+ * Returns all tasks that can run in parallel right now.
+ * A task is available if: status is pending, all dependencies are done,
+ * and its ID is not in the excludeIds set (currently being worked on).
+ * Also returns in-progress tasks (interrupted work) that aren't excluded.
+ */
+export function getAvailableTasks(
+  taskList: TaskList,
+  excludeIds: Set<string>
+): Task[] {
+  const completedIds = new Set(
+    taskList.tasks.filter(t => t.status === 'done').map(t => t.id)
+  );
+
+  const available: Task[] = [];
+
+  // In-progress tasks first (interrupted work that needs retrying)
+  for (const task of taskList.tasks) {
+    if (task.status === 'in-progress' && !excludeIds.has(task.id)) {
+      available.push(task);
+    }
+  }
+
+  // Then pending tasks with all dependencies met
+  const pendingTasks = taskList.tasks
+    .filter(t => t.status === 'pending' && !excludeIds.has(t.id))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  for (const task of pendingTasks) {
+    const depsComplete = task.dependencies.every(dep => completedIds.has(dep));
+    if (depsComplete) {
+      available.push(task);
+    }
+  }
+
+  return available;
+}
+
 export async function updateTaskStatus(
   filePath: string,
   taskId: string,

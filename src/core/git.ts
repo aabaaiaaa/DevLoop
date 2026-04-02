@@ -53,7 +53,7 @@ export async function saveDevloopCommitFormat(workspace: string, userMessage: st
 /**
  * Execute a git command and return the result
  */
-async function execGit(args: string[], cwd: string): Promise<{ success: boolean; output: string; error?: string }> {
+export async function execGit(args: string[], cwd: string): Promise<{ success: boolean; output: string; error?: string }> {
   return new Promise((resolve) => {
     const child = spawn('git', args, { cwd });
     let stdout = '';
@@ -189,7 +189,7 @@ export async function ensureGitignore(workspace: string, verbose: boolean = fals
     }
 
     // Critical patterns that should always be present
-    const criticalPatterns = ['node_modules/', '.env'];
+    const criticalPatterns = ['node_modules/', '.env', '.worktrees/'];
     const missingPatterns: string[] = [];
 
     for (const pattern of criticalPatterns) {
@@ -562,4 +562,62 @@ export async function commitIteration(
   }
 
   return { committed: result.committed };
+}
+
+/**
+ * Configure git settings needed for parallel worktree execution.
+ * - gc.auto=0 prevents concurrent garbage collection issues
+ * - core.longpaths=true avoids Windows 260-char path limit issues
+ */
+export async function configureForParallel(workspace: string): Promise<void> {
+  await execGit(['config', 'gc.auto', '0'], workspace);
+  await execGit(['config', 'core.longpaths', 'true'], workspace);
+}
+
+/**
+ * Get the current branch name
+ */
+export async function getCurrentBranch(workspace: string): Promise<string | null> {
+  const result = await execGit(['rev-parse', '--abbrev-ref', 'HEAD'], workspace);
+  return result.success ? result.output.trim() : null;
+}
+
+/**
+ * Run a verification command in a directory and return whether it succeeded
+ */
+export async function runVerificationInDir(
+  directory: string,
+  verificationCommand: string,
+  verbose: boolean = false
+): Promise<{ success: boolean; output: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(verificationCommand, {
+      cwd: directory,
+      shell: true,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (data) => { stdout += data.toString(); });
+    child.stderr.on('data', (data) => { stderr += data.toString(); });
+
+    child.on('close', (code) => {
+      if (verbose) {
+        if (stdout.trim()) console.log(stdout.trim());
+        if (stderr.trim()) console.log(stderr.trim());
+      }
+      resolve({
+        success: code === 0,
+        output: (stdout + '\n' + stderr).trim()
+      });
+    });
+
+    child.on('error', (err) => {
+      resolve({
+        success: false,
+        output: err.message
+      });
+    });
+  });
 }

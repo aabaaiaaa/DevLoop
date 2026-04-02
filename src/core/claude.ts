@@ -3,7 +3,7 @@ import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { Task, ClaudeResult, ClaudeErrorType, TokenUsage } from '../types/index.js';
+import { Task, ClaudeResult, ClaudeErrorType, TokenUsage, ToolEvent } from '../types/index.js';
 
 /**
  * Parse token usage from Claude JSON output
@@ -192,6 +192,7 @@ function formatToolActivity(toolName: string, toolInput: any): string {
 export interface InvokeClaudeOptions {
   verbose?: boolean;
   onProgress?: (activity: string) => void;
+  onToolCall?: (event: ToolEvent) => void;
 }
 
 export async function invokeClaudeAutomated(
@@ -199,7 +200,7 @@ export async function invokeClaudeAutomated(
   workingDirectory: string,
   options: InvokeClaudeOptions = {}
 ): Promise<ClaudeResult> {
-  const { verbose = false, onProgress } = options;
+  const { verbose = false, onProgress, onToolCall } = options;
   const startTime = Date.now();
 
   // Ensure workspace settings exist
@@ -269,9 +270,18 @@ export async function invokeClaudeAutomated(
           if (event.type === 'content_block_start') {
             // Tool usage starting
             const block = event.content_block;
-            if (block?.type === 'tool_use' && block?.name && onProgress) {
-              const activity = formatToolActivity(block.name, block.input);
-              onProgress(activity);
+            if (block?.type === 'tool_use' && block?.name) {
+              if (onProgress) {
+                const activity = formatToolActivity(block.name, block.input);
+                onProgress(activity);
+              }
+              if (onToolCall) {
+                onToolCall({
+                  timestamp: Date.now(),
+                  toolName: block.name,
+                  command: block.input?.command || undefined
+                });
+              }
             }
           } else if (event.type === 'content_block_delta') {
             // Tool input being streamed (partial)
@@ -291,9 +301,18 @@ export async function invokeClaudeAutomated(
           } else if (event.type === 'assistant' && event.message?.content) {
             // Assistant message with tool uses
             for (const block of event.message.content) {
-              if (block.type === 'tool_use' && block.name && onProgress) {
-                const activity = formatToolActivity(block.name, block.input);
-                onProgress(activity);
+              if (block.type === 'tool_use' && block.name) {
+                if (onProgress) {
+                  const activity = formatToolActivity(block.name, block.input);
+                  onProgress(activity);
+                }
+                if (onToolCall) {
+                  onToolCall({
+                    timestamp: Date.now(),
+                    toolName: block.name,
+                    command: block.input?.command || undefined
+                  });
+                }
               }
             }
           }
@@ -411,14 +430,48 @@ export function spawnClaudeInteractive(
   return child;
 }
 
+export interface BuildTaskPromptOptions {
+  isRetry?: boolean;
+  priorDiff?: string;
+  isParallel?: boolean;
+}
+
 export function buildTaskPrompt(
   task: Task,
   requirementsPath: string,
   tasksPath: string,
   progressPath: string,
   workspacePath: string,
-  isRetry: boolean = false
+  options: boolean | BuildTaskPromptOptions = false
 ): string {
+  // Backward compat: accept boolean (isRetry) or options object
+  const opts: BuildTaskPromptOptions = typeof options === 'boolean'
+    ? { isRetry: options }
+    : options;
+  const { isRetry = false, priorDiff, isParallel = false } = opts;
+
+  const retrySection = isRetry ? `RETRY CONTEXT:
+This task was previously attempted but interrupted. Your partial work from the
+previous attempt has been committed to git. Review the existing code and git log
+before continuing — build on what is already there rather than starting from scratch.
+
+` : '';
+
+  const priorDiffSection = priorDiff ? `PRIOR ATTEMPT:
+A previous attempt at this task produced the following changes, but the codebase
+has been modified since by other tasks completing concurrently. Reapply these
+changes to the current codebase, adapting as needed to work with the updated code:
+
+\`\`\`diff
+${priorDiff}
+\`\`\`
+
+` : '';
+
+  const parallelNote = isParallel
+    ? '\nNOTE: Other tasks may be running concurrently. Focus only on your assigned task.\n'
+    : '';
+
   return `You are working on an automated development task. Follow these instructions carefully:
 
 WORKSPACE RESTRICTION:
@@ -427,7 +480,7 @@ You are ONLY allowed to work within: ${workspacePath}
 - Do NOT run commands that affect files outside this directory
 - All file paths must be within the workspace
 - Do NOT modify any files in .devloop/ or .claude/ directories
-
+${parallelNote}
 CONTEXT FILES:
 1. READ the full requirements document at: ${requirementsPath}
    This contains the detailed project plan and context for all tasks.
@@ -444,12 +497,7 @@ ${task.verification}
 Before finishing, you MUST verify your work using the check above.
 If verification fails, fix the issue. Do not finish until verification passes.
 
-${isRetry ? `RETRY CONTEXT:
-This task was previously attempted but interrupted. Your partial work from the
-previous attempt has been committed to git. Review the existing code and git log
-before continuing — build on what is already there rather than starting from scratch.
-
-` : ''}INSTRUCTIONS:
+${retrySection}${priorDiffSection}INSTRUCTIONS:
 1. Complete the task described above
 2. Make all necessary code changes WITHIN THE WORKSPACE ONLY
 3. Do NOT work on any other tasks

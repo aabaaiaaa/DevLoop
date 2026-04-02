@@ -29,6 +29,14 @@ export interface IterationLog {
   errorType?: ClaudeErrorType;
   errorDetail?: string;
   tokenUsage?: TokenUsage;
+  workDuration?: string;         // Estimated time doing actual work
+  verificationDuration?: string; // Estimated time running verification
+}
+
+export interface ToolEvent {
+  timestamp: number;
+  toolName: string;
+  command?: string;  // For bash tool calls, the command being run
 }
 
 export interface Progress {
@@ -51,7 +59,8 @@ export interface Session {
   sessionId: string | null;
   lastIteration: number;
   startedAt: string;
-  activeTask?: ActiveTask | null;
+  activeTask?: ActiveTask | null;      // backward compat (sequential)
+  activeTasks?: ActiveTask[];          // parallel mode
   iteration: number;  // 1-based requirements iteration count
   devloopVersion?: string;
 }
@@ -72,6 +81,18 @@ export interface DevLoopConfig {
   tokenLimit?: number;  // Stop if session tokens exceed this limit
   costLimit?: number;   // Stop if session cost (USD) exceeds this limit
   sessionAction?: 'create' | 'update' | 'none';  // Session modification to perform after uncommitted check
+  maxWorkers?: number;  // Max concurrent Claude instances (default 5)
+}
+
+export interface ProjectUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  totalIterations: number;
+  totalTasksCompleted: number;
 }
 
 export type ClaudeErrorType =
@@ -107,4 +128,36 @@ export interface ClaudeResult {
 export interface WorkspaceConfig {
   /** Format for all DevLoop commits. Use {action} placeholder. */
   devloopCommitFormat?: string;
+}
+
+// --- Parallel execution types ---
+
+export interface WorktreeInfo {
+  worktreePath: string;
+  branchName: string;
+  taskId: string;
+}
+
+export interface MergeResult {
+  success: boolean;
+  conflictFiles?: string[];
+  verificationFailed?: boolean;
+}
+
+export interface WorkerState {
+  task: Task;
+  worktree: WorktreeInfo;
+  promise: Promise<WorkerResult>;
+  startTime: number;
+}
+
+export interface WorkerResult {
+  taskId: string;
+  taskTitle: string;
+  claudeResult: ClaudeResult;
+  worktree: WorktreeInfo;
+  priorDiff?: string;
+  mergeFailureCount: number;
+  toolEvents: ToolEvent[];
+  verification?: string;  // the task's verification field, for timing analysis
 }

@@ -52,7 +52,9 @@ After the interactive Claude session ends:
 ```
 cli.ts → commands/*.ts → core/loop.ts → core/claude.ts
                               ↓
-                    parser/tasks.ts (parse tasks.md, find next task)
+                    parser/tasks.ts (parse tasks, find available tasks)
+                              ↓
+                    core/worktree.ts (create/merge worktrees, parallel mode)
                               ↓
                     parser/progress.ts (log iteration)
 ```
@@ -60,7 +62,7 @@ cli.ts → commands/*.ts → core/loop.ts → core/claude.ts
 ### Key Abstractions
 
 - **Workspace**: A directory containing `.devloop/` (with `requirements.md`, `tasks.md`, `progress.md`, `session.json`) and `.claude/` (with `CLAUDE.md`, `settings.json`). Resolved via: CLI flag → global config → cwd.
-- **Session**: Persisted state in `.devloop/session.json` tracking phase (`init`/`run`), iteration count, and the DevLoop version that created it (`devloopVersion`).
+- **Session**: Persisted state in `.devloop/session.json` tracking phase (`init`/`run`), iteration count, the DevLoop version that created it (`devloopVersion`), and `activeTasks: ActiveTask[]` for parallel-mode crash recovery (backward compat: also writes `activeTask` for the first task).
 - **Global Config**: `~/.devloop/config.json` stores default workspace and settings.
 
 ### Document Formats
@@ -86,9 +88,46 @@ Task selection (`getNextTask`) returns the next task to work on:
 2. Then pending tasks, sorted by task ID
 3. Only pending tasks whose dependencies are all `done` are eligible
 
+For parallel execution, `getAvailableTasks(taskList, excludeIds)` returns ALL tasks whose dependencies are met and that aren't currently being worked on.
+
 When a task was previously interrupted (in-progress with an existing progress log), Claude receives context about the previous attempt so it can build on partial work rather than starting from scratch.
 
-During execution, tasks transition: `pending` → `in-progress` (before Claude starts) → `done` (on success). On failure, tasks stay `in-progress` so they are retried next iteration (`getNextTask` prioritizes in-progress tasks). If the run is stopped gracefully (Q key) mid-task and Claude succeeds, the task is marked `done`.
+During execution, tasks transition: `pending` → `in-progress` (before Claude starts) → `done` (on success). On failure, tasks stay `in-progress` so they are retried next iteration. If the run is stopped gracefully (Q key) mid-task and Claude succeeds, the task is marked `done`.
+
+### Parallel Execution
+
+When git is available and `maxWorkers > 1` (default 5, ceiling 20, configurable via `--max-workers`), DevLoop runs multiple Claude instances simultaneously using git worktrees for file isolation. The parallel git config (`gc.auto=0`, `core.longpaths=true`) is only applied when `maxWorkers > 1`.
+
+**Worker Pool Pattern**: The loop uses a continuous event-loop (`while` loop with `Promise.race`) rather than batched waves. As each worker completes and merges, newly unblocked tasks start immediately. Concurrency is dynamic — limited by the dependency graph and the `maxWorkers` cap. If no workers are active and no tasks are available (all remaining have unmet dependencies), the loop detects a deadlock and stops, listing the blocked tasks.
+
+**Git Worktrees**: Each parallel task gets its own worktree (`.worktrees/T001`, `.worktrees/T003`, etc.) branching from current HEAD. Worktrees share the `.git` object store but have independent working trees. The prompt's workspace path and Claude's `--add-dir` flag both point to the worktree path, so Claude operates entirely within the isolated worktree.
+
+**Merge Strategy**: After a worker completes successfully, the merge is processed on the main workspace (serialized via `mergeMutex`):
+1. `git merge --no-commit --no-ff devloop/TASK-XXX` on main
+2. Restore `.devloop/` and `.claude/` from HEAD via a triple-step process: `checkout HEAD --`, `reset HEAD --`, `checkout --` (handles both modified and newly-created files in those directories)
+3. Run the task's verification command on the merged code (catches semantic conflicts where git merge succeeds but code is broken)
+4. If merge + verification pass: `git commit` with the task completion message
+5. If merge conflicts or verification fails: `git merge --abort` then `git reset --hard HEAD`
+
+Merges are serialized via an async mutex — only one merge at a time.
+
+**Merge Conflict Recovery**: On merge failure or post-merge verification failure:
+1. Capture the diff: `git diff HEAD...devloop/TASK-XXX -- . ':!.devloop' ':!.claude'` (excludes DevLoop-managed files)
+2. Store the diff in a `priorDiffs` map and increment the task's `mergeFailureCounts` counter
+3. Mark the task back to `pending` for re-queue
+4. Next time the task is picked up, `buildTaskPrompt` receives the diff via `priorDiff` option, which adds a "PRIOR ATTEMPT" section to the prompt instructing Claude to reapply the changes to the updated codebase
+5. After 2 merge failures for the same task, it runs sequentially on the main workspace (no worktree) to guarantee no merge conflicts
+
+**Concurrency Safety**:
+- `gc.auto=0` and `core.longpaths=true` configured at run start (only when `maxWorkers > 1`)
+- File writes (`tasks.md`, `progress.md`) protected by `fileMutex` (`AsyncMutex` in `core/mutex.ts`)
+- Merge operations protected by `mergeMutex` (separate from `fileMutex`)
+- `.worktrees/` added to `.gitignore`
+- Stale worktrees cleaned up at start of each run via `git worktree prune` and deletion of orphaned `devloop/*` branches
+- Session tracks `activeTasks: ActiveTask[]` for crash recovery, updated after each worker starts and each worker completes
+- When `isParallel` is true (other workers active), the prompt includes a note: "Other tasks may be running concurrently. Focus only on your assigned task."
+
+**Sequential Fallback**: When git is not available, `maxWorkers` is 1, or `skipWorktrees` override is set, the loop runs one task at a time using the main workspace directly (no worktrees). Tasks that fail to merge twice also fall back to sequential execution on the main workspace.
 
 ### Status Cross-Reference
 
@@ -103,23 +142,26 @@ Parsers for `tasks.md` and `progress.md` normalize CRLF line endings to LF befor
 
 ### Safety
 
-Automated mode uses `--add-dir <workspace>` to restrict Claude's file operations. The prompt explicitly states workspace boundaries. A `.claude/settings.json` is generated with permission rules.
+Automated mode uses `--add-dir <workspace>` to restrict Claude's file operations. The prompt explicitly states workspace boundaries. A `.claude/settings.json` is generated with permission rules via `ensureWorkspaceSettings(workspacePath)`.
 
 Additionally, `.devloop/` and `.claude/` directories are deny-listed in `settings.json` during automated runs, preventing Claude from editing DevLoop's own configuration, task definitions, or progress files.
+
+In parallel mode, each worktree gets its own `.claude/settings.json` generated with the worktree path (not the main workspace path), so the deny rules and `--add-dir` scope are correctly set for the worktree directory.
 
 ### Progress Indicators
 
 The run loop provides visual feedback:
-- **Terminal title**: Updated via ANSI escape sequence (`\x1b]0;TITLE\x07`) to show iteration/task/progress
-- **Timed spinner**: Built-in spinner (`core/spinner.ts`) with a 1-second interval to show elapsed time and current activity during task execution
-- Format: `DevLoop: {iteration}/{max} - {taskId} ({completed}/{total} done)`
+- **Terminal title**: Updated via ANSI escape sequence (`\x1b]0;TITLE\x07`) to show active workers and progress
+- **Spinner**: Built-in spinner (`core/spinner.ts`) shows active tasks and completion status
+- **Parallel format**: `Working: TASK-001, TASK-003 (2 active, 4/10 done)`
+- **Terminal title format**: `DevLoop: {active} active | {completed}/{total} done`
 
 ### Graceful Shutdown
 
 The run loop uses **stdin keypresses** (not SIGINT) for graceful shutdown, avoiding the problem of SIGINT propagating to the child Claude process and killing it mid-task:
 
-- **Q key**: Sets `stopRequested` flag. The spinner is paused and a persistent `>> Graceful stop requested` message is displayed via `stopAndPersist`, then the spinner resumes. The current task runs to completion, then the loop stops. If the task succeeds, it is marked as done; work is not lost. The `activeSpinner` module-level variable gives the `onData` handler access to the spinner so the message is visible immediately (plain `console.log` gets overwritten by spinner redraws).
-- **Ctrl+C**: Force stop. In raw mode this is handled as a keypress (`\x03`), calling `process.exit(1)`. This kills everything including the Claude child process.
+- **Q key**: Sets `stopRequested` flag. The spinner is paused and a persistent `>> Graceful stop requested` message is displayed via `stopAndPersist`, then the spinner resumes. In parallel mode, the loop stops spawning new workers and waits for ALL active workers to complete via `Promise.allSettled`. Completed workers that succeeded are merged back to main. If merges succeed, the tasks are marked as done; work is not lost. The `activeSpinner` module-level variable gives the `onData` handler access to the spinner so the message is visible immediately (plain `console.log` gets overwritten by spinner redraws).
+- **Ctrl+C**: Force stop. In raw mode this is handled as a keypress (`\x03`), calling `process.exit(1)`. This kills everything including all Claude child processes.
 
 When stdin is a TTY, raw mode (`setRawMode(true)`) is used so keypresses arrive immediately. On Windows (especially Git Bash/mintty), stdin may not be detected as a TTY; in that case a line-buffered fallback is used (`q` + Enter). Raw mode is defensively re-enabled after each child process spawn, since spawning `cmd.exe` on Windows can reset the console input mode.
 
@@ -131,6 +173,8 @@ If a run is interrupted (Ctrl+C) mid-task, the next run detects uncommitted git 
 - Claude then starts fresh with a clean working tree
 - The partial work is preserved in git history and can be recovered if needed
 - If commit fails, DevLoop stops and requires manual resolution (prevents inconsistent state)
+
+In parallel mode, stale worktrees from crashed runs are also cleaned up at the start of each run via `cleanupStaleWorktrees()` which runs `git worktree prune` and deletes orphaned `devloop/*` branches.
 
 ### Git Integration
 
@@ -204,7 +248,7 @@ Errors from Claude CLI are classified in `core/claude.ts`:
 - **task_failure**: Claude ran but task didn't complete (not an API error)
 - **unknown**: Unclassified API errors
 
-API errors (all except `task_failure`) stop the loop immediately. Task failures continue to the next iteration.
+API errors (all except `task_failure`) stop the loop. In parallel mode, when an API error is detected the loop stops spawning new workers and waits for active workers to finish before exiting. Task failures continue to the next iteration (the task remains in-progress for retry).
 
 ### Commit Message Format
 
@@ -256,8 +300,10 @@ The `Session` type includes a `devloopVersion` field that records the DevLoop ve
 
 - **`invoker`**: Replaces `invokeClaudeAutomated` — tests pass a mock that returns controlled `ClaudeResult` objects without spawning Claude CLI
 - **`skipStdin`**: Skips `setupGracefulShutdown()` and `ensureStdinListening()` — avoids stdin raw mode interference with the test runner
-- **`skipGit`**: Skips `ensureGitRepo()`, `commitIteration()`, `commitInterruptedWork()`, and `getUncommittedChanges()` — avoids git dependency in tests
+- **`skipGit`**: Skips `ensureGitRepo()`, `commitIteration()`, `commitInterruptedWork()`, and `getUncommittedChanges()` — also disables parallel worktree execution since worktrees require git
 - **`stopAfterIterations`**: Sets `stopRequested = true` after N iterations complete — simulates Q key press for testing graceful shutdown behavior
+- **`maxWorkers`**: Overrides `config.maxWorkers` for test predictability
+- **`skipWorktrees`**: Forces sequential execution even when git is available — bypasses worktree creation/merge
 
 Production behavior is unchanged when `overrides` is undefined.
 
