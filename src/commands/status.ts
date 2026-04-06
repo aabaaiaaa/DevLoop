@@ -7,6 +7,7 @@ import { parseTasks, getNextTask } from '../parser/tasks.js';
 import { readProgress } from '../parser/progress.js';
 import { getUncommittedChanges, getUncommittedDiff } from '../core/git.js';
 import { getArchivedIterations } from '../core/archive.js';
+import { getVersion } from '../core/version.js';
 
 interface StatusOptions {
   workspace?: string;
@@ -47,6 +48,7 @@ export async function statusCommand(options: StatusOptions): Promise<void> {
 
     if (options.json) {
       console.log(JSON.stringify({
+        devloopVersion: getVersion(),
         workspace,
         project: taskList.projectName,
         iteration: iterationNum,
@@ -69,7 +71,7 @@ export async function statusCommand(options: StatusOptions): Promise<void> {
 
     if (session) {
       console.log(chalk.gray(`Phase: ${session.phase}`));
-      console.log(chalk.gray(`DevLoop version: ${session.devloopVersion || 'unknown (pre-3.0)'}`));
+      console.log(chalk.gray(`Session created with: ${session.devloopVersion ? `v${session.devloopVersion}` : 'unknown (pre-3.0)'}`));
     }
     if (archived.length > 0) {
       console.log(chalk.gray(`Iteration: ${iterationNum} (${archived.length} archived)`));

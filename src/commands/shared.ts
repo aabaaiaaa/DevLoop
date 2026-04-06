@@ -2,6 +2,7 @@ import * as readline from 'readline';
 import chalk from 'chalk';
 import { checkClaudeInstalled } from '../core/claude.js';
 import { getRequirementsPath, getTasksPath, getProgressPath } from '../core/config.js';
+import { getVersion } from '../core/version.js';
 import { DevLoopConfig } from '../types/index.js';
 
 /**
@@ -52,8 +53,11 @@ const BANNER = `
  */
 export function printBanner(subtitle?: string): void {
   console.log(chalk.blue.bold(BANNER));
+  const version = `v${getVersion()}`;
   if (subtitle) {
-    console.log(chalk.blue.bold(`  ${subtitle}`));
+    console.log(chalk.blue.bold(`  ${subtitle}`) + chalk.gray(` (${version})`));
+  } else {
+    console.log(chalk.gray(`  ${version}`));
   }
   console.log();
 }
