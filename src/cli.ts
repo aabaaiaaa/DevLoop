@@ -28,7 +28,6 @@ program
   .description('Resume work on requirements or task execution')
   .option('-w, --workspace <path>', 'Workspace directory')
   .option('-i, --max-iterations <number>', 'Maximum iterations for run (ceiling: 1000)', '100')
-  .option('-W, --max-workers <number>', 'Maximum parallel Claude instances (default: 5, ceiling: 20)', '5')
   .option('-t, --token-limit <number>', 'Stop when cumulative tokens exceed this limit')
   .option('-c, --cost-limit <number>', 'Stop when session cost (USD) exceeds this limit (default: $10, ceiling: $500)')
   .option('--verbose', 'Verbose output (show Claude raw output)')
@@ -41,7 +40,6 @@ program
   .option('-i, --max-iterations <number>', 'Maximum iterations (ceiling: 1000)', '100')
   .option('-t, --token-limit <number>', 'Stop when cumulative tokens exceed this limit')
   .option('-c, --cost-limit <number>', 'Stop when session cost (USD) exceeds this limit (default: $10, ceiling: $500)')
-  .option('-W, --max-workers <number>', 'Maximum parallel Claude instances (default: 5, ceiling: 20)', '5')
   .option('--verbose', 'Verbose output (show Claude raw output)')
   .option('--dry-run', 'Show what would be done without executing')
   .action(runCommand);

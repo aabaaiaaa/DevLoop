@@ -6,7 +6,6 @@ import { requireClaudeInstalled, buildRunConfig } from './shared.js';
 interface RunOptions {
   workspace?: string;
   maxIterations?: string;
-  maxWorkers?: string;
   tokenLimit?: string;
   costLimit?: string;
   verbose?: boolean;
@@ -21,7 +20,6 @@ export async function runCommand(options: RunOptions): Promise<void> {
   const config = buildRunConfig({
     workspace,
     maxIterations: options.maxIterations,
-    maxWorkers: options.maxWorkers,
     tokenLimit: options.tokenLimit,
     costLimit: options.costLimit,
     verbose: options.verbose,

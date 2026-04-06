@@ -430,47 +430,20 @@ export function spawnClaudeInteractive(
   return child;
 }
 
-export interface BuildTaskPromptOptions {
-  isRetry?: boolean;
-  priorDiff?: string;
-  isParallel?: boolean;
-}
-
 export function buildTaskPrompt(
   task: Task,
   requirementsPath: string,
   tasksPath: string,
   progressPath: string,
   workspacePath: string,
-  options: boolean | BuildTaskPromptOptions = false
+  isRetry: boolean = false
 ): string {
-  // Backward compat: accept boolean (isRetry) or options object
-  const opts: BuildTaskPromptOptions = typeof options === 'boolean'
-    ? { isRetry: options }
-    : options;
-  const { isRetry = false, priorDiff, isParallel = false } = opts;
-
   const retrySection = isRetry ? `RETRY CONTEXT:
 This task was previously attempted but interrupted. Your partial work from the
 previous attempt has been committed to git. Review the existing code and git log
 before continuing — build on what is already there rather than starting from scratch.
 
 ` : '';
-
-  const priorDiffSection = priorDiff ? `PRIOR ATTEMPT:
-A previous attempt at this task produced the following changes, but the codebase
-has been modified since by other tasks completing concurrently. Reapply these
-changes to the current codebase, adapting as needed to work with the updated code:
-
-\`\`\`diff
-${priorDiff}
-\`\`\`
-
-` : '';
-
-  const parallelNote = isParallel
-    ? '\nNOTE: Other tasks may be running concurrently. Focus only on your assigned task.\n'
-    : '';
 
   return `You are working on an automated development task. Follow these instructions carefully:
 
@@ -480,7 +453,7 @@ You are ONLY allowed to work within: ${workspacePath}
 - Do NOT run commands that affect files outside this directory
 - All file paths must be within the workspace
 - Do NOT modify any files in .devloop/ or .claude/ directories
-${parallelNote}
+
 CONTEXT FILES:
 1. READ the full requirements document at: ${requirementsPath}
    This contains the detailed project plan and context for all tasks.
@@ -497,7 +470,7 @@ ${task.verification}
 Before finishing, you MUST verify your work using the check above.
 If verification fails, fix the issue. Do not finish until verification passes.
 
-${retrySection}${priorDiffSection}INSTRUCTIONS:
+${retrySection}INSTRUCTIONS:
 1. Complete the task described above
 2. Make all necessary code changes WITHIN THE WORKSPACE ONLY
 3. Do NOT work on any other tasks

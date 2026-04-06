@@ -3,14 +3,12 @@ import { createSpinner, Spinner } from './spinner.js';
 import { spawn as spawnProcess } from 'child_process';
 import * as fsSync from 'fs';
 import * as path from 'path';
-import { DevLoopConfig, IterationLog, ActiveTask, Task, Progress, ClaudeErrorType, WorkerState, WorkerResult, WorktreeInfo, ToolEvent } from '../types/index.js';
-import { parseTasks, getNextTask, getAvailableTasks, updateTaskStatus } from '../parser/tasks.js';
+import { DevLoopConfig, IterationLog, ActiveTask, Task, Progress, ClaudeErrorType, ToolEvent } from '../types/index.js';
+import { parseTasks, getNextTask, updateTaskStatus } from '../parser/tasks.js';
 import { readProgress, appendIteration, getCompletedTaskIds } from '../parser/progress.js';
 import { invokeClaudeAutomated, buildTaskPrompt, isApiError } from './claude.js';
-import { createSession, readSession, writeSession, updateSessionPhase, updateSessionIteration, setActiveTasks, getActiveTasks } from './session.js';
-import { commitIteration, commitInterruptedWork, ensureGitRepo, getUncommittedChanges, configureForParallel } from './git.js';
-import { createWorktree, prepareWorktree, mergeWorktree, getWorktreeDiff, cleanupWorktree, cleanupStaleWorktrees } from './worktree.js';
-import { AsyncMutex } from './mutex.js';
+import { createSession, readSession, writeSession, updateSessionPhase, updateSessionIteration, setActiveTask, getActiveTask } from './session.js';
+import { commitIteration, commitInterruptedWork, ensureGitRepo, getUncommittedChanges } from './git.js';
 import { readProjectUsage, addProjectUsage } from './config.js';
 import { createLogger, Logger } from './logger.js';
 import { promptUser, printBanner } from '../commands/shared.js';
@@ -639,26 +637,6 @@ function ensureStdinListening(): void {
 }
 
 /**
- * Write an active task marker to the session file (single task - backward compat wrapper).
- */
-async function setActiveTask(
-  workspacePath: string,
-  activeTask: ActiveTask | null
-): Promise<void> {
-  await setActiveTasks(workspacePath, activeTask ? [activeTask] : []);
-}
-
-/**
- * Read active task marker from session. Returns null if no crash marker.
- */
-async function getActiveTask(
-  workspacePath: string
-): Promise<ActiveTask | null> {
-  const tasks = await getActiveTasks(workspacePath);
-  return tasks.length > 0 ? tasks[0] : null;
-}
-
-/**
  * Read the last N lines from the debug log.
  */
 function readDebugLogTail(workspacePath: string, lines: number = 20): string[] {
@@ -722,10 +700,6 @@ export interface RunLoopOverrides {
   skipGit?: boolean;
   /** Request graceful stop after this many iterations (for testing Q key behavior) */
   stopAfterIterations?: number;
-  /** Override max workers for testing */
-  maxWorkers?: number;
-  /** Skip worktree-based parallel execution (use sequential loop) */
-  skipWorktrees?: boolean;
 }
 
 export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverrides): Promise<void> {
@@ -771,8 +745,6 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
   if (config.costLimit) {
     console.log(chalk.gray(`Cost limit: $${config.costLimit.toFixed(2)} (per session)`));
   }
-  const maxWorkers = overrides?.maxWorkers ?? config.maxWorkers ?? 5;
-  console.log(chalk.gray(`Max workers: ${maxWorkers}`));
   console.log(chalk.green(`Workspace restriction: ENABLED (--add-dir)`));
 
   if (config.dryRun) {
@@ -795,16 +767,6 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
       }
     } else {
       console.log(chalk.yellow('Git: Not available - changes will not be versioned'));
-    }
-
-    // Configure git for parallel worktree execution
-    if (gitSetup.gitAvailable && maxWorkers > 1) {
-      await configureForParallel(config.workspacePath);
-      // Clean up stale worktrees from previous crashed runs
-      const cleaned = await cleanupStaleWorktrees(config.workspacePath);
-      if (cleaned > 0) {
-        console.log(chalk.gray(`Git: Cleaned up ${cleaned} stale worktree branch(es)`));
-      }
     }
 
     // Check for uncommitted changes (potential interrupted work)
@@ -903,19 +865,6 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
     }
   }
 
-  // Determine if we can use parallel execution (requires git)
-  const useParallel = gitSetup.gitAvailable && maxWorkers > 1 && !overrides?.skipWorktrees;
-
-  if (useParallel) {
-    console.log(chalk.green(`Parallel execution: ENABLED (up to ${maxWorkers} workers)`));
-  }
-
-  // --- Parallel Worker Pool ---
-  const fileMutex = new AsyncMutex();
-  const mergeMutex = new AsyncMutex();
-  const activeWorkers = new Map<string, WorkerState>();
-  const mergeFailureCounts = new Map<string, number>();
-  const priorDiffs = new Map<string, string>();
   let iterationCounter = startIteration;
   let apiErrorDetected = false;
   let hookFailureDetected = false;
@@ -953,7 +902,7 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
     const doneTasks = taskList.tasks.filter(t => t.status === 'done');
     const totalTasks = taskList.tasks.length;
 
-    if (doneTasks.length === totalTasks && activeWorkers.size === 0) {
+    if (doneTasks.length === totalTasks) {
       setTerminalTitle(`DevLoop: All ${doneTasks.length} tasks complete!`);
       console.log(chalk.green.bold('\n✓ All tasks completed!'));
       allTasksComplete = true;
@@ -978,171 +927,84 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
       hasInterruptedWork = false;
     }
 
-    // Find available tasks (not active, deps met)
-    const activeIds = new Set(activeWorkers.keys());
-    const available = getAvailableTasks(taskList, activeIds);
+    // Find next task to work on
+    const task = getNextTask(taskList);
 
-    // How many new workers can we start?
-    const effectiveMaxWorkers = useParallel ? maxWorkers : 1;
-    const slotsAvailable = effectiveMaxWorkers - activeWorkers.size;
-    const tasksToStart = available.slice(0, Math.max(0, slotsAvailable));
-
-    // If no active workers and no available tasks, we're done or deadlocked
-    if (activeWorkers.size === 0 && tasksToStart.length === 0) {
+    if (!task) {
       const pendingTasks = taskList.tasks.filter(t => t.status === 'pending');
       if (pendingTasks.length > 0) {
         console.log(chalk.yellow('\nNo available tasks (all remaining tasks have unmet dependencies)'));
         console.log(chalk.gray('Blocked tasks:'));
-        for (const task of pendingTasks) {
-          console.log(chalk.gray(`  - ${task.id}: depends on ${task.dependencies.join(', ')}`));
+        for (const t of pendingTasks) {
+          console.log(chalk.gray(`  - ${t.id}: depends on ${t.dependencies.join(', ')}`));
         }
       }
       break;
     }
 
-    // Start new workers
-    for (const task of tasksToStart) {
-      if (iterationCounter > endIteration) break;
-      if (config.dryRun) {
-        console.log(chalk.yellow(`  [DRY RUN] Would execute ${task.id}: ${task.title}`));
-        iterationCounter++;
-        continue;
-      }
-
-      const isRetry = task.status === 'in-progress';
-      const priorDiff = priorDiffs.get(task.id);
-      const mergeFailCount = mergeFailureCounts.get(task.id) || 0;
-      const taskIteration = iterationCounter;
+    if (config.dryRun) {
+      console.log(chalk.yellow(`  [DRY RUN] Would execute ${task.id}: ${task.title}`));
       iterationCounter++;
-
-      // Mark task as in-progress (mutex-protected)
-      const release = await fileMutex.acquire();
-      try {
-        await updateTaskStatus(config.tasksPath, task.id, 'in-progress');
-      } finally {
-        release();
-      }
-
-      logger.info(`Starting worker for ${task.id} - ${task.title} (iteration ${taskIteration})`);
-      console.log(chalk.cyan(`\n  Starting ${task.id}: ${task.title} (${doneTasks.length}/${totalTasks} done)${priorDiff ? ' (re-applying prior changes)' : ''}`));
-
-      // Create the worker promise
-      const workerPromise = (async (): Promise<WorkerResult> => {
-        const taskStartTime = Date.now();
-        let worktree: WorktreeInfo | undefined;
-        const toolEvents: ToolEvent[] = [];
-
-        try {
-          // Create worktree if parallel, otherwise work in main workspace
-          const useWorktreeForTask = useParallel && mergeFailCount < 2;
-          let workDir: string;
-
-          if (useWorktreeForTask) {
-            worktree = await createWorktree(config.workspacePath, task.id);
-            await prepareWorktree(worktree, config.workspacePath);
-            workDir = worktree.worktreePath;
-          } else {
-            // Sequential fallback (no git, or merge failed too many times)
-            workDir = config.workspacePath;
-          }
-
-          // Build prompt with context
-          const promptOpts = {
-            isRetry,
-            priorDiff: priorDiff || undefined,
-            isParallel: useParallel && activeWorkers.size > 0
-          };
-          const prompt = buildTaskPrompt(
-            task, config.requirementsPath, config.tasksPath, config.progressPath,
-            workDir, promptOpts
-          );
-
-          // Invoke Claude with tool event tracking
-          const result = await invoke(prompt, workDir, {
-            verbose: config.verbose,
-            onToolCall: (event) => { toolEvents.push(event); }
-          });
-
-          // Re-enable raw mode after child process
-          if (!overrides?.skipStdin) ensureStdinListening();
-
-          return {
-            taskId: task.id,
-            taskTitle: task.title,
-            claudeResult: result,
-            worktree: worktree || { worktreePath: config.workspacePath, branchName: '', taskId: task.id },
-            priorDiff,
-            mergeFailureCount: mergeFailCount,
-            toolEvents,
-            verification: task.verification
-          };
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          return {
-            taskId: task.id,
-            taskTitle: task.title,
-            claudeResult: {
-              success: false,
-              output: '',
-              rawOutput: '',
-              error: errorMessage,
-              errorType: 'unknown' as ClaudeErrorType,
-              duration: Date.now() - taskStartTime
-            },
-            worktree: worktree || { worktreePath: config.workspacePath, branchName: '', taskId: task.id },
-            priorDiff,
-            mergeFailureCount: mergeFailCount,
-            toolEvents,
-            verification: task.verification
-          };
-        }
-      })();
-
-      activeWorkers.set(task.id, {
-        task,
-        worktree: { worktreePath: '', branchName: `devloop/${task.id}`, taskId: task.id },
-        promise: workerPromise,
-        startTime: Date.now()
-      });
-
-      // Update crash markers
-      const activeTasksList: ActiveTask[] = [...activeWorkers.values()].map(w => ({
-        taskId: w.task.id,
-        taskTitle: w.task.title,
-        iterationNumber: taskIteration,
-        startedAt: new Date().toISOString()
-      }));
-      await setActiveTasks(config.workspacePath, activeTasksList);
-
-      // Update terminal title
-      setTerminalTitle(
-        `DevLoop: ${activeWorkers.size} active | ${doneTasks.length}/${totalTasks} done`
-      );
+      continue;
     }
 
-    // If no active workers (e.g., dry run only), continue
-    if (activeWorkers.size === 0) continue;
+    const isRetry = task.status === 'in-progress';
+    const taskIteration = iterationCounter;
+    iterationCounter++;
 
-    // Show spinner for active workers
-    const activeNames = [...activeWorkers.keys()].join(', ');
-    spinner.start(chalk.cyan(`  Working: ${activeNames} (${activeWorkers.size} active, ${doneTasks.length}/${totalTasks} done)`));
+    // Mark task as in-progress
+    await updateTaskStatus(config.tasksPath, task.id, 'in-progress');
+
+    logger.info(`Starting ${task.id} - ${task.title} (iteration ${taskIteration})`);
+    console.log(chalk.cyan(`\n  Starting ${task.id}: ${task.title} (${doneTasks.length}/${totalTasks} done)`));
+
+    // Set crash marker
+    await setActiveTask(config.workspacePath, {
+      taskId: task.id,
+      taskTitle: task.title,
+      iterationNumber: taskIteration,
+      startedAt: new Date().toISOString()
+    });
+
+    // Update terminal title
+    setTerminalTitle(`DevLoop: ${task.id} | ${doneTasks.length}/${totalTasks} done`);
+
+    // Build prompt and invoke Claude
+    const taskStartTime = Date.now();
+    const toolEvents: ToolEvent[] = [];
+
+    const prompt = buildTaskPrompt(
+      task, config.requirementsPath, config.tasksPath, config.progressPath,
+      config.workspacePath, isRetry
+    );
+
+    // Show spinner
+    spinner.start(chalk.cyan(`  Working: ${task.id} (${doneTasks.length}/${totalTasks} done)`));
     activeSpinner = spinner;
 
-    // Wait for any worker to complete
-    const completed = await Promise.race(
-      [...activeWorkers.entries()].map(([taskId, worker]) =>
-        worker.promise.then(result => ({ taskId, result }))
-      )
-    );
+    let claudeResult;
+    try {
+      claudeResult = await invoke(prompt, config.workspacePath, {
+        verbose: config.verbose,
+        onToolCall: (event) => { toolEvents.push(event); }
+      });
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      claudeResult = {
+        success: false,
+        output: '',
+        rawOutput: '',
+        error: errorMessage,
+        errorType: 'unknown' as ClaudeErrorType,
+        duration: Date.now() - taskStartTime
+      };
+    }
 
     spinner.stop();
     activeSpinner = null;
 
-    // Capture worker start time before removing
-    const workerStartTime = activeWorkers.get(completed.taskId)?.startTime ?? Date.now();
-
-    // Remove completed worker
-    activeWorkers.delete(completed.taskId);
+    // Re-enable raw mode after child process
+    if (!overrides?.skipStdin) ensureStdinListening();
 
     // Simulate graceful stop for testing
     if (overrides?.stopAfterIterations !== undefined) {
@@ -1152,11 +1014,9 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
       }
     }
 
-    const result = completed.result;
-    const claudeResult = result.claudeResult;
     const duration = formatDuration(Math.round(claudeResult.duration / 1000));
 
-    logger.info(`Worker ${result.taskId} finished: success=${claudeResult.success}, duration=${claudeResult.duration}ms`);
+    logger.info(`${task.id} finished: success=${claudeResult.success}, duration=${claudeResult.duration}ms`);
 
     // Update token tracking
     if (claudeResult.tokenUsage) {
@@ -1177,28 +1037,27 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
 
     // Collect timing data
     iterationTimings.push({
-      iteration: iterationCounter - 1,
-      taskId: result.taskId,
-      taskTitle: result.taskTitle,
+      iteration: taskIteration,
+      taskId: task.id,
+      taskTitle: task.title,
       durationMs: claudeResult.duration,
       success: claudeResult.success,
       errorType: claudeResult.success ? undefined : claudeResult.errorType
     });
 
-    // Record in progress.md (mutex-protected)
-    // Estimate work vs verification timing
-    const workerEndTime = workerStartTime + claudeResult.duration;
-    const timingSplitForLog = result.verification
-      ? estimateWorkVerificationSplit(result.toolEvents, result.verification, workerStartTime, workerEndTime)
+    // Record in progress.md
+    const taskEndTime = taskStartTime + claudeResult.duration;
+    const timingSplitForLog = task.verification
+      ? estimateWorkVerificationSplit(toolEvents, task.verification, taskStartTime, taskEndTime)
       : null;
 
     const iterationLog: IterationLog = {
-      iteration: iterationCounter - 1,
+      iteration: taskIteration,
       timestamp: new Date().toISOString(),
-      taskAttempted: result.taskId,
-      taskCompleted: claudeResult.success ? result.taskId : null,
+      taskAttempted: task.id,
+      taskCompleted: claudeResult.success ? task.id : null,
       summary: claudeResult.success
-        ? `Completed ${result.taskTitle}`
+        ? `Completed ${task.title}`
         : `Failed: ${claudeResult.error?.split('\n')[0] || 'Unknown error'}`,
       duration,
       exitStatus: claudeResult.success ? 'success' : 'error',
@@ -1210,141 +1069,50 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
     };
 
     {
-      const release = await fileMutex.acquire();
-      try {
-        const currentTasks = await parseTasks(config.tasksPath);
-        await appendIteration(config.progressPath, currentTasks.tasks.length, iterationLog);
-      } finally {
-        release();
-      }
+      const currentTasks = await parseTasks(config.tasksPath);
+      await appendIteration(config.progressPath, currentTasks.tasks.length, iterationLog);
     }
 
     // Write task log
-    const prompt = buildTaskPrompt(
-      { id: result.taskId, title: result.taskTitle, description: '', verification: '', status: 'in-progress', dependencies: [] },
+    const logPrompt = buildTaskPrompt(
+      { id: task.id, title: task.title, description: '', verification: '', status: 'in-progress', dependencies: [] },
       config.requirementsPath, config.tasksPath, config.progressPath,
-      result.worktree.worktreePath, { priorDiff: result.priorDiff }
+      config.workspacePath, false
     );
-    await writeTaskLog(config.workspacePath, result.taskId, result.taskTitle, iterationCounter - 1, prompt, claudeResult, logger);
+    await writeTaskLog(config.workspacePath, task.id, task.title, taskIteration, logPrompt, claudeResult, logger);
 
     if (claudeResult.success) {
       const tokenInfo = claudeResult.tokenUsage
         ? ` [${claudeResult.tokenUsage.totalTokens.toLocaleString()} tokens]`
         : '';
 
-      // Try to merge if using worktrees
-      if (useParallel && result.worktree.branchName) {
-        const mergeRelease = await mergeMutex.acquire();
-        try {
-          // Get the task's verification command for post-merge verification
-          const currentTasks = await parseTasks(config.tasksPath);
-          const taskDef = currentTasks.tasks.find(t => t.id === result.taskId);
-          const verification = taskDef?.verification;
+      // Mark task done and commit
+      await updateTaskStatus(config.tasksPath, task.id, 'done');
+      const updated = await parseTasks(config.tasksPath);
+      const doneCount = updated.tasks.filter(t => t.status === 'done').length;
 
-          const mergeResult = await mergeWorktree(
-            config.workspacePath, result.worktree, result.taskTitle,
-            verification, config.verbose
-          );
+      spinner.succeed(chalk.green(`  Completed ${task.id} (${duration})${tokenInfo} (${doneCount}/${totalTasks} done)`));
 
-          if (mergeResult.success) {
-            // Mark task done (mutex-protected)
-            const release = await fileMutex.acquire();
-            let doneCount = 0;
-            try {
-              await updateTaskStatus(config.tasksPath, result.taskId, 'done');
-              const updated = await parseTasks(config.tasksPath);
-              doneCount = updated.tasks.filter(t => t.status === 'done').length;
-            } finally {
-              release();
-            }
+      // Show token info and task stats
+      if (claudeResult.tokenUsage) {
+        const t = claudeResult.tokenUsage;
+        console.log(chalk.gray(`    ${t.totalTokens.toLocaleString()} tokens ($${t.costUsd.toFixed(4)}) | Session: $${sessionCost.toFixed(4)}`));
+      }
+      displayTaskStats(toolEvents, task.verification, taskStartTime, taskEndTime);
 
-            spinner.succeed(chalk.green(`  Merged ${result.taskId} (${duration})${tokenInfo} (${doneCount}/${totalTasks} done)`));
-
-            // Clean up
-            priorDiffs.delete(result.taskId);
-            mergeFailureCounts.delete(result.taskId);
-
-            // Show token info and task stats
-            if (claudeResult.tokenUsage) {
-              const t = claudeResult.tokenUsage;
-              console.log(chalk.gray(`    ${t.totalTokens.toLocaleString()} tokens ($${t.costUsd.toFixed(4)}) | Session: $${sessionCost.toFixed(4)}`));
-            }
-            const workerEndTime = workerStartTime + claudeResult.duration;
-            const timingSplit = displayTaskStats(
-              result.toolEvents, result.verification,
-              workerStartTime, workerEndTime
-            );
-          } else {
-            // Merge failed — save diff and re-queue
-            const failCount = (mergeFailureCounts.get(result.taskId) || 0) + 1;
-            mergeFailureCounts.set(result.taskId, failCount);
-
-            const diff = await getWorktreeDiff(config.workspacePath, result.worktree.branchName);
-            if (diff) {
-              priorDiffs.set(result.taskId, diff);
-            }
-
-            const reason = mergeResult.verificationFailed ? 'post-merge verification failed' : 'merge conflict';
-            if (failCount >= 2) {
-              spinner.fail(chalk.yellow(`  ${result.taskId}: ${reason} (will retry sequentially)`));
-            } else {
-              spinner.fail(chalk.yellow(`  ${result.taskId}: ${reason} — will re-apply changes (attempt ${failCount}/2)`));
-            }
-
-            // Revert task to pending for re-queue (unless it'll be sequential fallback)
-            const release = await fileMutex.acquire();
-            try {
-              await updateTaskStatus(config.tasksPath, result.taskId, 'pending');
-            } finally {
-              release();
-            }
-          }
-        } finally {
-          mergeRelease();
+      if (!overrides?.skipGit) {
+        const commitResult = await commitIteration(
+          config.workspacePath, taskIteration,
+          task.id, task.title, true, config.verbose
+        );
+        if (commitResult.hookFailure) {
+          hookFailureDetected = true;
+          console.log(chalk.yellow('\nStopping DevLoop due to commit hook failure.'));
         }
-
-        // Clean up worktree
-        await cleanupWorktree(result.worktree, config.workspacePath);
-
-      } else {
-        // Sequential mode (no worktree) — commit directly on main
-        const release = await fileMutex.acquire();
-        let doneCount = 0;
-        try {
-          await updateTaskStatus(config.tasksPath, result.taskId, 'done');
-          const updated = await parseTasks(config.tasksPath);
-          doneCount = updated.tasks.filter(t => t.status === 'done').length;
-        } finally {
-          release();
-        }
-
-        spinner.succeed(chalk.green(`  Completed ${result.taskId} (${duration})${tokenInfo} (${doneCount}/${totalTasks} done)`));
-
-        // Show token info and task stats
-        if (claudeResult.tokenUsage) {
-          const t = claudeResult.tokenUsage;
-          console.log(chalk.gray(`    ${t.totalTokens.toLocaleString()} tokens ($${t.costUsd.toFixed(4)}) | Session: $${sessionCost.toFixed(4)}`));
-        }
-        const workerEndTime = workerStartTime + claudeResult.duration;
-        displayTaskStats(result.toolEvents, result.verification, workerStartTime, workerEndTime);
-
-        if (!overrides?.skipGit) {
-          const commitResult = await commitIteration(
-            config.workspacePath, iterationCounter - 1,
-            result.taskId, result.taskTitle, true, config.verbose
-          );
-          if (commitResult.hookFailure) {
-            hookFailureDetected = true;
-            console.log(chalk.yellow('\nStopping DevLoop due to commit hook failure.'));
-          }
-        }
-
-        priorDiffs.delete(result.taskId);
-        mergeFailureCounts.delete(result.taskId);
       }
     } else {
       // Task failed
-      spinner.fail(chalk.red(`  Failed ${result.taskId} - ${claudeResult.error?.split('\n')[0] || 'Unknown error'}`));
+      spinner.fail(chalk.red(`  Failed ${task.id} - ${claudeResult.error?.split('\n')[0] || 'Unknown error'}`));
 
       // Check for API error
       if (isApiError(claudeResult.errorType)) {
@@ -1355,60 +1123,17 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
       } else {
         console.log(chalk.yellow('  Will retry on next cycle...'));
       }
-
-      // Clean up worktree on failure
-      if (useParallel && result.worktree.branchName) {
-        await cleanupWorktree(result.worktree, config.workspacePath);
-      }
     }
 
-    // Update crash markers
-    const remainingTasks: ActiveTask[] = [...activeWorkers.values()].map(w => ({
-      taskId: w.task.id,
-      taskTitle: w.task.title,
-      iterationNumber: iterationCounter,
-      startedAt: new Date().toISOString()
-    }));
-    await setActiveTasks(config.workspacePath, remainingTasks);
+    // Clear crash marker
+    await setActiveTask(config.workspacePath, null);
 
     // Update session
-    await updateSessionIteration(config.workspacePath, iterationCounter - 1);
+    await updateSessionIteration(config.workspacePath, taskIteration);
 
     // Check graceful stop
     if (stopRequested) {
       console.log(chalk.yellow('\nStopping as requested.'));
-      // Wait for remaining workers
-      if (activeWorkers.size > 0) {
-        const remaining = await Promise.allSettled(
-          [...activeWorkers.values()].map(w => w.promise)
-        );
-        // Process remaining results (simplified — just mark and clean up)
-        for (const settled of remaining) {
-          if (settled.status === 'fulfilled') {
-            const r = settled.value;
-            if (r.claudeResult.success && useParallel && r.worktree.branchName) {
-              const mergeRelease = await mergeMutex.acquire();
-              try {
-                const mr = await mergeWorktree(config.workspacePath, r.worktree, r.taskTitle, undefined, config.verbose);
-                if (mr.success) {
-                  const release = await fileMutex.acquire();
-                  try { await updateTaskStatus(config.tasksPath, r.taskId, 'done'); } finally { release(); }
-                  spinner.succeed(chalk.green(`  Merged ${r.taskId} (completed during shutdown)`));
-                }
-              } finally {
-                mergeRelease();
-              }
-              await cleanupWorktree(r.worktree, config.workspacePath);
-            }
-            // Update tokens
-            if (r.claudeResult.tokenUsage) {
-              sessionTokens.total += r.claudeResult.tokenUsage.totalTokens;
-              sessionCost += r.claudeResult.tokenUsage.costUsd;
-            }
-          }
-        }
-        activeWorkers.clear();
-      }
       console.log(chalk.gray('Run "devloop continue" to resume.'));
       break;
     }
@@ -1469,8 +1194,8 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
     setTerminalTitle('DevLoop: Complete');
   }
 
-  // Clear any remaining crash markers
-  await setActiveTasks(config.workspacePath, []);
+  // Clear crash marker
+  await setActiveTask(config.workspacePath, null);
 
   // Run final code review when ALL tasks completed
   if (allTasksComplete || (finalProgress && finalProgress.completed === finalProgress.totalTasks)) {

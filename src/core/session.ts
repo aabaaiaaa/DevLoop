@@ -63,16 +63,13 @@ export async function updateSessionIteration(workspace: string, iteration: numbe
 }
 
 /**
- * Set the list of active tasks (parallel mode crash marker).
- * Replaces the old single activeTask field.
+ * Set the active task marker in the session file (crash recovery).
  */
-export async function setActiveTasks(workspace: string, tasks: ActiveTask[]): Promise<void> {
+export async function setActiveTask(workspace: string, task: ActiveTask | null): Promise<void> {
   try {
     const session = await readSession(workspace);
     if (session) {
-      session.activeTasks = tasks.length > 0 ? tasks : undefined;
-      // Also set activeTask for backward compat (first task or null)
-      session.activeTask = tasks.length > 0 ? tasks[0] : null;
+      session.activeTask = task;
       await writeSession(workspace, session);
     }
   } catch {
@@ -81,23 +78,14 @@ export async function setActiveTasks(workspace: string, tasks: ActiveTask[]): Pr
 }
 
 /**
- * Get the list of active tasks from the session (parallel mode).
- * Falls back to single activeTask for backward compat.
+ * Get the active task from the session (crash recovery).
  */
-export async function getActiveTasks(workspace: string): Promise<ActiveTask[]> {
+export async function getActiveTask(workspace: string): Promise<ActiveTask | null> {
   try {
     const session = await readSession(workspace);
-    if (!session) return [];
-    // Prefer activeTasks array, fall back to single activeTask
-    if (session.activeTasks && session.activeTasks.length > 0) {
-      return session.activeTasks;
-    }
-    if (session.activeTask) {
-      return [session.activeTask];
-    }
-    return [];
+    if (!session) return null;
+    return session.activeTask || null;
   } catch {
-    return [];
+    return null;
   }
 }
-

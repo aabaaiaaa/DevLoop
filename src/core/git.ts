@@ -189,7 +189,7 @@ export async function ensureGitignore(workspace: string, verbose: boolean = fals
     }
 
     // Critical patterns that should always be present
-    const criticalPatterns = ['node_modules/', '.env', '.worktrees/'];
+    const criticalPatterns = ['node_modules/', '.env'];
     const missingPatterns: string[] = [];
 
     for (const pattern of criticalPatterns) {
@@ -562,16 +562,6 @@ export async function commitIteration(
   }
 
   return { committed: result.committed };
-}
-
-/**
- * Configure git settings needed for parallel worktree execution.
- * - gc.auto=0 prevents concurrent garbage collection issues
- * - core.longpaths=true avoids Windows 260-char path limit issues
- */
-export async function configureForParallel(workspace: string): Promise<void> {
-  await execGit(['config', 'gc.auto', '0'], workspace);
-  await execGit(['config', 'core.longpaths', 'true'], workspace);
 }
 
 /**
