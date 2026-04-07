@@ -8,6 +8,7 @@ interface RunOptions {
   maxIterations?: string;
   tokenLimit?: string;
   costLimit?: string;
+  taskTimeout?: string;
   verbose?: boolean;
   dryRun?: boolean;
 }
@@ -22,6 +23,7 @@ export async function runCommand(options: RunOptions): Promise<void> {
     maxIterations: options.maxIterations,
     tokenLimit: options.tokenLimit,
     costLimit: options.costLimit,
+    taskTimeout: options.taskTimeout,
     verbose: options.verbose,
     dryRun: options.dryRun,
     sessionAction: 'create'

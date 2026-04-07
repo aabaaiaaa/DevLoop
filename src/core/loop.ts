@@ -745,6 +745,9 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
   if (config.costLimit) {
     console.log(chalk.gray(`Cost limit: $${config.costLimit.toFixed(2)} (per session)`));
   }
+  if (config.taskTimeout) {
+    console.log(chalk.gray(`Task timeout: ${formatDuration(config.taskTimeout / 1000)}`));
+  }
   console.log(chalk.green(`Workspace restriction: ENABLED (--add-dir)`));
 
   if (config.dryRun) {
@@ -957,6 +960,11 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
 
     logger.info(`Starting ${task.id} - ${task.title} (iteration ${taskIteration})`);
     console.log(chalk.cyan(`\n  Starting ${task.id}: ${task.title} (${doneTasks.length}/${totalTasks} done)`));
+    console.log(chalk.gray(`    Description: ${task.description}`));
+    console.log(chalk.gray(`    Verification: ${task.verification}`));
+    if (rawModeActive) {
+      console.log(chalk.gray(`    Press Q to stop after this task completes.`));
+    }
 
     // Set crash marker
     await setActiveTask(config.workspacePath, {
@@ -965,9 +973,6 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
       iterationNumber: taskIteration,
       startedAt: new Date().toISOString()
     });
-
-    // Update terminal title
-    setTerminalTitle(`DevLoop: ${task.id} | ${doneTasks.length}/${totalTasks} done`);
 
     // Build prompt and invoke Claude
     const taskStartTime = Date.now();
@@ -978,15 +983,24 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
       config.workspacePath, isRetry
     );
 
-    // Show spinner
-    spinner.start(chalk.cyan(`  Working: ${task.id} (${doneTasks.length}/${totalTasks} done)`));
+    // Show spinner with elapsed time
+    const termTitle = `DevLoop: ${task.id} | ${doneTasks.length}/${totalTasks} done`;
+    const spinnerState = startTimedSpinner(
+      spinner,
+      `  Working: ${task.id} (${doneTasks.length}/${totalTasks} done)`,
+      taskStartTime,
+      config.verbose,
+      termTitle
+    );
     activeSpinner = spinner;
 
     let claudeResult;
     try {
       claudeResult = await invoke(prompt, config.workspacePath, {
         verbose: config.verbose,
-        onToolCall: (event) => { toolEvents.push(event); }
+        onProgress: (activity) => { updateSpinnerActivity(spinnerState, activity); },
+        onToolCall: (event) => { toolEvents.push(event); },
+        taskTimeout: config.taskTimeout
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1000,6 +1014,7 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
       };
     }
 
+    if (spinnerState.interval) clearInterval(spinnerState.interval);
     spinner.stop();
     activeSpinner = null;
 

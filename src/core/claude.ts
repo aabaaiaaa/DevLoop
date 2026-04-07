@@ -193,6 +193,7 @@ export interface InvokeClaudeOptions {
   verbose?: boolean;
   onProgress?: (activity: string) => void;
   onToolCall?: (event: ToolEvent) => void;
+  taskTimeout?: number;  // Kill child process after this many milliseconds
 }
 
 export async function invokeClaudeAutomated(
@@ -238,6 +239,16 @@ export async function invokeClaudeAutomated(
     const promptContent = fsSync.readFileSync(promptFile, 'utf-8');
     child.stdin?.write(promptContent);
     child.stdin?.end();
+
+    // Task timeout — kill the child process if it exceeds the limit
+    let wasTimedOut = false;
+    let timeoutTimer: NodeJS.Timeout | null = null;
+    if (options.taskTimeout && options.taskTimeout > 0) {
+      timeoutTimer = setTimeout(() => {
+        wasTimedOut = true;
+        child.kill('SIGTERM');
+      }, options.taskTimeout);
+    }
 
     let stderr = '';
     let resultText = '';
@@ -333,6 +344,9 @@ export async function invokeClaudeAutomated(
     });
 
     child.on('close', (code, signal) => {
+      // Clear timeout timer
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+
       // Clean up temp file
       try {
         fsSync.unlinkSync(promptFile);
@@ -355,7 +369,7 @@ export async function invokeClaudeAutomated(
       }
 
       const duration = Date.now() - startTime;
-      const hasError = code !== 0 || isError;
+      const hasError = code !== 0 || isError || wasTimedOut;
 
       // Combine all available error information
       let errorMessage: string | undefined;
@@ -373,7 +387,15 @@ export async function invokeClaudeAutomated(
         }
         errorMessage = parts.join('\n') || 'Unknown error (no exit code, no signal, no stderr)';
       }
-      const errorType = hasError ? classifyError(errorMessage || stderr || '', null) : undefined;
+      let errorType = hasError ? classifyError(errorMessage || stderr || '', null) : undefined;
+
+      // Override for timeout: classify as task_failure so the loop retries
+      // instead of stopping (classifyError would match "timeout" as network_error)
+      if (wasTimedOut) {
+        const timeoutMinutes = Math.round((options.taskTimeout || 0) / 60000);
+        errorMessage = `Task exceeded ${timeoutMinutes} minute time limit`;
+        errorType = 'task_failure';
+      }
 
       resolve({
         success: !hasError,
@@ -389,6 +411,9 @@ export async function invokeClaudeAutomated(
     });
 
     child.on('error', (err) => {
+      // Clear timeout timer
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+
       // Clean up temp file
       try {
         fsSync.unlinkSync(promptFile);

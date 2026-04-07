@@ -132,7 +132,7 @@ export function createMockInvoker(options?: MockInvokerOptions) {
     workingDir: string,
     _opts?: InvokeClaudeOptions
   ): Promise<ClaudeResult> => {
-    const taskMatch = prompt.match(/Task ID: (TASK-\d+)/);
+    const taskMatch = prompt.match(/Task ID: (TASK-\d+[a-z]*)/);
     const isReview = prompt.includes('final code review');
     const taskId = taskMatch?.[1] || (isReview ? 'REVIEW' : 'unknown');
     calls.push({ prompt, taskId, workingDir });
@@ -182,7 +182,7 @@ export function createFailThenSucceedMock(failTaskId: string, failCount: number 
     workingDir: string,
     _opts?: InvokeClaudeOptions
   ): Promise<ClaudeResult> => {
-    const taskMatch = prompt.match(/Task ID: (TASK-\d+)/);
+    const taskMatch = prompt.match(/Task ID: (TASK-\d+[a-z]*)/);
     const isReview = prompt.includes('final code review');
     const taskId = taskMatch?.[1] || (isReview ? 'REVIEW' : 'unknown');
     calls.push({ prompt, taskId, workingDir });

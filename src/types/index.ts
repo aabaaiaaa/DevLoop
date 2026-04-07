@@ -80,6 +80,7 @@ export interface DevLoopConfig {
   tokenLimit?: number;  // Stop if session tokens exceed this limit
   costLimit?: number;   // Stop if session cost (USD) exceeds this limit
   sessionAction?: 'create' | 'update' | 'none';  // Session modification to perform after uncommitted check
+  taskTimeout?: number;  // Kill task after this many milliseconds (default: 2 hours)
 }
 
 export interface ProjectUsage {

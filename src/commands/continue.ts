@@ -4,6 +4,7 @@ import * as path from 'path';
 import chalk from 'chalk';
 import { resolveWorkspace, getRequirementsPath, getTasksPath } from '../core/config.js';
 import { readSession, createSession, updateSessionPhase } from '../core/session.js';
+import { Session } from '../types/index.js';
 import { spawnClaudeInteractive } from '../core/claude.js';
 import { requireClaudeInstalled, buildRunConfig, promptUser as promptYesNo, printBanner } from './shared.js';
 import { runLoop } from '../core/loop.js';
@@ -17,6 +18,7 @@ interface ContinueOptions {
   maxIterations?: string;
   tokenLimit?: string;
   costLimit?: string;
+  taskTimeout?: string;
   verbose?: boolean;
 }
 
@@ -33,6 +35,90 @@ async function promptChoice(question: string): Promise<string> {
     });
   });
 }
+
+// --- Workspace state detection ---
+
+interface WorkspaceState {
+  phase: 'init' | 'run';
+  hasRequirements: boolean;
+  hasTasks: boolean;
+  hasReview: boolean;
+  taskCounts: { total: number; pending: number; inProgress: number; done: number };
+  allTasksDone: boolean;
+}
+
+async function detectWorkspaceState(workspace: string, session: Session): Promise<WorkspaceState> {
+  const requirementsPath = getRequirementsPath(workspace);
+  const reviewPath = path.join(workspace, '.devloop', 'review.md');
+
+  let hasRequirements = false;
+  let hasTasks = false;
+  let hasReview = false;
+  let taskCounts = { total: 0, pending: 0, inProgress: 0, done: 0 };
+
+  try { await fs.access(requirementsPath); hasRequirements = true; } catch {}
+  try { await fs.access(reviewPath); hasReview = true; } catch {}
+
+  try {
+    const tasksPath = getTasksPath(workspace);
+    const taskList = await parseTasks(tasksPath);
+    hasTasks = taskList.tasks.length > 0;
+    taskCounts = {
+      total: taskList.tasks.length,
+      pending: taskList.tasks.filter(t => t.status === 'pending').length,
+      inProgress: taskList.tasks.filter(t => t.status === 'in-progress').length,
+      done: taskList.tasks.filter(t => t.status === 'done').length,
+    };
+  } catch {}
+
+  return {
+    phase: session.phase,
+    hasRequirements,
+    hasTasks,
+    hasReview,
+    taskCounts,
+    allTasksDone: hasTasks && taskCounts.done === taskCounts.total,
+  };
+}
+
+// --- Dynamic menu ---
+
+interface MenuItem {
+  key: string;
+  label: string;
+  action: string;
+}
+
+function buildMenuOptions(state: WorkspaceState): MenuItem[] {
+  const items: MenuItem[] = [];
+  let key = 1;
+
+  if (state.allTasksDone) {
+    // All tasks completed — show completion-oriented options
+    if (state.hasReview) {
+      items.push({ key: String(key++), label: 'View the review', action: 'view-review' });
+    }
+    items.push({ key: String(key++), label: 'Archive and start next phase', action: 'archive-describe' });
+    if (state.hasReview) {
+      items.push({ key: String(key++), label: 'Archive and start next phase (informed by review)', action: 'archive-review' });
+    }
+  } else {
+    // Not all done — show work-continuation options
+    if (state.phase === 'init' || !state.hasTasks) {
+      items.push({ key: String(key++), label: 'Continue working on requirements', action: 'continue-requirements' });
+    }
+    if (state.hasTasks && !state.allTasksDone) {
+      const { done, total } = state.taskCounts;
+      items.push({ key: String(key++), label: `Continue running tasks (${done}/${total} done)`, action: 'continue-run' });
+    }
+    items.push({ key: String(key++), label: 'Archive and start new requirements', action: 'archive-describe' });
+  }
+
+  items.push({ key: String(key++), label: 'Cancel', action: 'cancel' });
+  return items;
+}
+
+// --- Command entry point ---
 
 export async function continueCommand(options: ContinueOptions): Promise<void> {
   await requireClaudeInstalled();
@@ -58,35 +144,66 @@ export async function continueCommand(options: ContinueOptions): Promise<void> {
     console.log(chalk.gray(`Last iteration: ${session.lastIteration}`));
   }
 
+  // Detect workspace state and show summary
+  const state = await detectWorkspaceState(workspace, session);
+
+  if (state.hasTasks) {
+    const { done, total, inProgress, pending } = state.taskCounts;
+    if (state.allTasksDone) {
+      console.log(chalk.green(`\nAll ${total} tasks completed.`));
+      if (state.hasReview) {
+        console.log(chalk.gray('Review document available.'));
+      }
+    } else {
+      console.log(chalk.gray(`\nTasks: ${done}/${total} done, ${inProgress} in progress, ${pending} pending`));
+    }
+  } else if (state.phase === 'init') {
+    console.log(chalk.gray('\nNo tasks yet (still in requirements phase).'));
+  }
+
   console.log();
 
-  // Ask user what they want to do
+  // Build and display contextual menu
+  const menuItems = buildMenuOptions(state);
+
   console.log(chalk.cyan('What would you like to do?'));
-  console.log(chalk.white('  1. Continue working on requirements'));
-  console.log(chalk.white('  2. Continue running tasks'));
-  console.log(chalk.white('  3. Archive and start new requirements'));
-  console.log(chalk.white('  4. Cancel'));
+  for (const item of menuItems) {
+    console.log(chalk.white(`  ${item.key}. ${item.label}`));
+  }
   console.log();
 
-  const choice = await promptChoice('Enter choice (1/2/3/4): ');
+  const validKeys = menuItems.map(m => m.key).join('/');
+  const choice = await promptChoice(`Enter choice (${validKeys}): `);
 
-  switch (choice) {
-    case '1':
+  const selected = menuItems.find(m => m.key === choice);
+  if (!selected) {
+    console.log(chalk.red('Invalid choice.'));
+    return;
+  }
+
+  switch (selected.action) {
+    case 'continue-requirements':
       await continueRequirements(workspace, session.sessionId);
       break;
-    case '2':
+    case 'continue-run':
       await continueRun(workspace, options);
       break;
-    case '3':
+    case 'archive-describe':
       await startNextIteration(workspace, currentIteration);
       break;
-    case '4':
+    case 'archive-review':
+      await startNextIterationFromReview(workspace, currentIteration);
+      break;
+    case 'view-review':
+      await viewReview(workspace);
+      break;
+    case 'cancel':
       console.log(chalk.gray('Cancelled.'));
       break;
-    default:
-      console.log(chalk.red('Invalid choice.'));
   }
 }
+
+// --- Action handlers ---
 
 async function continueRequirements(workspace: string, sessionId: string | null): Promise<void> {
   await updateSessionPhase(workspace, 'init');
@@ -118,6 +235,7 @@ async function continueRun(workspace: string, options: ContinueOptions): Promise
     maxIterations: options.maxIterations,
     tokenLimit: options.tokenLimit,
     costLimit: options.costLimit,
+    taskTimeout: options.taskTimeout,
     verbose: options.verbose,
     dryRun: false,
     sessionAction: 'update'
@@ -129,6 +247,18 @@ async function continueRun(workspace: string, options: ContinueOptions): Promise
   }
 
   await runLoop(config);
+}
+
+async function viewReview(workspace: string): Promise<void> {
+  const reviewPath = path.join(workspace, '.devloop', 'review.md');
+  try {
+    const content = await fs.readFile(reviewPath, 'utf-8');
+    console.log(chalk.cyan('\n--- Review ---\n'));
+    console.log(content);
+    console.log(chalk.cyan('\n--- End Review ---\n'));
+  } catch {
+    console.log(chalk.red('review.md not found.'));
+  }
 }
 
 async function startNextIteration(workspace: string, currentIteration: number): Promise<void> {
@@ -150,16 +280,28 @@ async function startNextIteration(workspace: string, currentIteration: number): 
       }
     }
   } catch {
-    // Can't parse requirements, proceed anyway
+    // Can't parse tasks, proceed anyway
   }
 
+  await archiveAndSpawnNextIteration(workspace, currentIteration, false);
+}
+
+async function startNextIterationFromReview(workspace: string, currentIteration: number): Promise<void> {
+  await archiveAndSpawnNextIteration(workspace, currentIteration, true);
+}
+
+async function archiveAndSpawnNextIteration(
+  workspace: string,
+  currentIteration: number,
+  includeReview: boolean
+): Promise<void> {
   console.log(chalk.cyan(`\nArchiving iteration ${currentIteration}...`));
 
   // 1. Archive current iteration
   await archiveIteration(workspace, currentIteration);
   console.log(chalk.green(`  Archived to .devloop/archive/iteration-${currentIteration}/`));
 
-  // 2. Load prior context for CLAUDE.md
+  // 2. Load prior context for CLAUDE.md (now includes review from archive)
   const priorContext = await loadPriorContext(workspace, currentIteration);
 
   // 3. Generate context-aware CLAUDE.md
@@ -170,10 +312,12 @@ async function startNextIteration(workspace: string, currentIteration: number): 
     iterationNumber: currentIteration,
     requirements: priorContext.requirements,
     tasks: priorContext.tasks,
-    progress: priorContext.progress
+    progress: priorContext.progress,
+    review: includeReview ? priorContext.review : undefined,
   });
   await fs.writeFile(claudeMdPath, claudeMdContent, 'utf-8');
-  console.log(chalk.green(`  Updated CLAUDE.md with prior work context`));
+  const reviewNote = includeReview && priorContext.review ? ' and review' : '';
+  console.log(chalk.green(`  Updated CLAUDE.md with prior work context${reviewNote}`));
 
   // 4. Create new session with incremented iteration
   const newIteration = currentIteration + 1;
@@ -185,7 +329,12 @@ async function startNextIteration(workspace: string, currentIteration: number): 
 
   console.log(chalk.cyan(`\nStarting iteration ${newIteration}...`));
   console.log(chalk.yellow.bold('\n--- Tips ---'));
-  console.log(chalk.yellow('  Claude has context from your previous iteration — describe what to build next.'));
+  if (includeReview && priorContext.review) {
+    console.log(chalk.yellow('  Claude has context from your previous iteration and the review document.'));
+    console.log(chalk.yellow('  It will use the review recommendations to inform the next phase of work.'));
+  } else {
+    console.log(chalk.yellow('  Claude has context from your previous iteration — describe what to build next.'));
+  }
   console.log(chalk.yellow('  When the new requirements and tasks are ready, exit with Ctrl+C or /exit.'));
   console.log(chalk.yellow('------------\n'));
 

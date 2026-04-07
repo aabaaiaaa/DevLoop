@@ -94,12 +94,14 @@ export async function loadPriorContext(workspace: string, iterationNumber: numbe
   requirements: string | null;
   tasks: string | null;
   progress: string | null;
+  review: string | null;
 }> {
   const archiveDir = path.join(workspace, '.devloop', 'archive', `iteration-${iterationNumber}`);
 
   let requirements: string | null = null;
   let tasks: string | null = null;
   let progress: string | null = null;
+  let review: string | null = null;
 
   try {
     requirements = await fs.readFile(path.join(archiveDir, 'requirements.md'), 'utf-8');
@@ -119,5 +121,11 @@ export async function loadPriorContext(workspace: string, iterationNumber: numbe
     // Not found
   }
 
-  return { requirements, tasks, progress };
+  try {
+    review = await fs.readFile(path.join(archiveDir, 'review.md'), 'utf-8');
+  } catch {
+    // Not found
+  }
+
+  return { requirements, tasks, progress, review };
 }

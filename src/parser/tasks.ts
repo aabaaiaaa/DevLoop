@@ -1,7 +1,7 @@
 import * as fs from 'fs/promises';
 import { Task, TaskList, TaskStatus } from '../types/index.js';
 
-const TASK_REGEX = /^### (TASK-\d+): (.+)$/;
+const TASK_REGEX = /^### (TASK-\d+[a-z]*): (.+)$/;
 const STATUS_REGEX = /^\s*-\s*\*\*Status\*\*:\s*(pending|in-progress|done)/i;
 const DEPS_REGEX = /^\s*-\s*\*\*Dependencies\*\*:\s*(.+)/i;
 const DESC_REGEX = /^\s*-\s*\*\*Description\*\*:\s*(.+)/i;

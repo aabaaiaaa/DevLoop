@@ -70,6 +70,7 @@ export interface RunConfigOptions {
   maxIterations?: string;
   tokenLimit?: string;
   costLimit?: string;
+  taskTimeout?: string;
   verbose?: boolean;
   dryRun?: boolean;
   sessionAction?: 'create' | 'update' | 'none';
@@ -82,6 +83,7 @@ const MAX_ITERATIONS_CEILING = 1000;
 const MAX_COST_CEILING = 500;
 const DEFAULT_COST_LIMIT = 10;
 const DEFAULT_MAX_ITERATIONS = 100;
+const DEFAULT_TASK_TIMEOUT_MINUTES = 150;
 
 export function buildRunConfig(options: RunConfigOptions): DevLoopConfig {
   const maxIterations = Math.min(
@@ -103,6 +105,9 @@ export function buildRunConfig(options: RunConfigOptions): DevLoopConfig {
     dryRun: options.dryRun || false,
     tokenLimit: options.tokenLimit ? parseInt(options.tokenLimit, 10) || undefined : undefined,
     costLimit,
+    taskTimeout: options.taskTimeout
+      ? (parseInt(options.taskTimeout, 10) || DEFAULT_TASK_TIMEOUT_MINUTES) * 60000
+      : DEFAULT_TASK_TIMEOUT_MINUTES * 60000,
     sessionAction: options.sessionAction
   };
 }
