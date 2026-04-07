@@ -2,7 +2,7 @@ import * as readline from 'readline';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import chalk from 'chalk';
-import { resolveWorkspace, getRequirementsPath, getTasksPath } from '../core/config.js';
+import { resolveWorkspace, getRequirementsPath, getTasksPath, readWorkspaceConfig } from '../core/config.js';
 import { readSession, createSession, updateSessionPhase } from '../core/session.js';
 import { Session } from '../types/index.js';
 import { spawnClaudeInteractive } from '../core/claude.js';
@@ -19,6 +19,7 @@ interface ContinueOptions {
   tokenLimit?: string;
   costLimit?: string;
   taskTimeout?: string;
+  verifyEachTask?: boolean;
   verbose?: boolean;
 }
 
@@ -230,12 +231,20 @@ async function continueRequirements(workspace: string, sessionId: string | null)
 }
 
 async function continueRun(workspace: string, options: ContinueOptions): Promise<void> {
+  // CLI flag takes precedence, fall back to workspace config
+  let verifyEachTask = options.verifyEachTask;
+  if (verifyEachTask === undefined) {
+    const wsConfig = await readWorkspaceConfig(workspace);
+    verifyEachTask = wsConfig.verifyEachTask;
+  }
+
   const config = buildRunConfig({
     workspace,
     maxIterations: options.maxIterations,
     tokenLimit: options.tokenLimit,
     costLimit: options.costLimit,
     taskTimeout: options.taskTimeout,
+    verifyEachTask,
     verbose: options.verbose,
     dryRun: false,
     sessionAction: 'update'

@@ -31,6 +31,7 @@ program
   .option('-t, --token-limit <number>', 'Stop when cumulative tokens exceed this limit')
   .option('-c, --cost-limit <number>', 'Stop when session cost (USD) exceeds this limit (default: $10, ceiling: $500)')
   .option('--task-timeout <minutes>', 'Kill task after N minutes (default: 150)', '150')
+  .option('--verify-each-task', 'Run verification per task instead of consolidated at end')
   .option('--verbose', 'Verbose output (show Claude raw output)')
   .action(continueCommand);
 
@@ -42,6 +43,7 @@ program
   .option('-t, --token-limit <number>', 'Stop when cumulative tokens exceed this limit')
   .option('-c, --cost-limit <number>', 'Stop when session cost (USD) exceeds this limit (default: $10, ceiling: $500)')
   .option('--task-timeout <minutes>', 'Kill task after N minutes (default: 150)', '150')
+  .option('--verify-each-task', 'Run verification per task instead of consolidated at end')
   .option('--verbose', 'Verbose output (show Claude raw output)')
   .option('--dry-run', 'Show what would be done without executing')
   .action(runCommand);

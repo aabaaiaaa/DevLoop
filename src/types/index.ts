@@ -81,6 +81,7 @@ export interface DevLoopConfig {
   costLimit?: number;   // Stop if session cost (USD) exceeds this limit
   sessionAction?: 'create' | 'update' | 'none';  // Session modification to perform after uncommitted check
   taskTimeout?: number;  // Kill task after this many milliseconds (default: 2 hours)
+  verifyEachTask?: boolean;  // When true, run verification per-task (old behavior). Default: false (consolidated verification at end)
 }
 
 export interface ProjectUsage {
@@ -127,5 +128,7 @@ export interface ClaudeResult {
 export interface WorkspaceConfig {
   /** Format for all DevLoop commits. Use {action} placeholder. */
   devloopCommitFormat?: string;
+  /** When true, run verification per-task instead of consolidated at end. */
+  verifyEachTask?: boolean;
 }
 

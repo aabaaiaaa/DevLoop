@@ -5,7 +5,7 @@ interface ConfigOptions {
   workspace?: string;
 }
 
-const VALID_CONFIG_KEYS = ['devloopCommitFormat'];
+const VALID_CONFIG_KEYS = ['devloopCommitFormat', 'verifyEachTask'];
 
 export async function configSetCommand(key: string, value: string, options: ConfigOptions): Promise<void> {
   if (!VALID_CONFIG_KEYS.includes(key)) {

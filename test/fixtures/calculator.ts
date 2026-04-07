@@ -134,15 +134,18 @@ export function createMockInvoker(options?: MockInvokerOptions) {
   ): Promise<ClaudeResult> => {
     const taskMatch = prompt.match(/Task ID: (TASK-\d+[a-z]*)/);
     const isReview = prompt.includes('final code review');
-    const taskId = taskMatch?.[1] || (isReview ? 'REVIEW' : 'unknown');
+    const isVerification = prompt.includes('consolidated test verification');
+    const taskId = taskMatch?.[1] || (isReview ? 'REVIEW' : (isVerification ? 'VERIFICATION' : 'unknown'));
     calls.push({ prompt, taskId, workingDir });
 
     const taskOverride = options?.taskResults?.[taskId];
 
     const result: ClaudeResult = {
       success: true,
-      output: isReview ? '# Code Review\n\nAll requirements met. No issues found.' : `Completed ${taskId}`,
-      rawOutput: `{"type":"result","result":"${isReview ? 'Review complete' : `Completed ${taskId}`}"}`,
+      output: isReview ? '# Code Review\n\nAll requirements met. No issues found.'
+        : isVerification ? 'All verifications passed.'
+        : `Completed ${taskId}`,
+      rawOutput: `{"type":"result","result":"${isReview ? 'Review complete' : (isVerification ? 'Verification complete' : `Completed ${taskId}`)}"}`,
       duration: 1500,
       exitCode: 0,
       signal: null,
@@ -184,14 +187,15 @@ export function createFailThenSucceedMock(failTaskId: string, failCount: number 
   ): Promise<ClaudeResult> => {
     const taskMatch = prompt.match(/Task ID: (TASK-\d+[a-z]*)/);
     const isReview = prompt.includes('final code review');
-    const taskId = taskMatch?.[1] || (isReview ? 'REVIEW' : 'unknown');
+    const isVerification = prompt.includes('consolidated test verification');
+    const taskId = taskMatch?.[1] || (isReview ? 'REVIEW' : (isVerification ? 'VERIFICATION' : 'unknown'));
     calls.push({ prompt, taskId, workingDir });
 
-    if (isReview) {
+    if (isReview || isVerification) {
       return {
         success: true,
-        output: '# Code Review\n\nAll requirements met. No issues found.',
-        rawOutput: '{"type":"result","result":"Review complete"}',
+        output: isReview ? '# Code Review\n\nAll requirements met. No issues found.' : 'All verifications passed.',
+        rawOutput: `{"type":"result","result":"${isReview ? 'Review complete' : 'Verification complete'}"}`,
         duration: 1500,
         exitCode: 0,
         signal: null,

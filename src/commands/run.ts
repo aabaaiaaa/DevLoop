@@ -1,5 +1,5 @@
 import chalk from 'chalk';
-import { resolveWorkspace } from '../core/config.js';
+import { resolveWorkspace, readWorkspaceConfig } from '../core/config.js';
 import { runLoop } from '../core/loop.js';
 import { requireClaudeInstalled, buildRunConfig } from './shared.js';
 
@@ -9,6 +9,7 @@ interface RunOptions {
   tokenLimit?: string;
   costLimit?: string;
   taskTimeout?: string;
+  verifyEachTask?: boolean;
   verbose?: boolean;
   dryRun?: boolean;
 }
@@ -18,12 +19,20 @@ export async function runCommand(options: RunOptions): Promise<void> {
 
   const workspace = await resolveWorkspace(options.workspace);
 
+  // CLI flag takes precedence, fall back to workspace config
+  let verifyEachTask = options.verifyEachTask;
+  if (verifyEachTask === undefined) {
+    const wsConfig = await readWorkspaceConfig(workspace);
+    verifyEachTask = wsConfig.verifyEachTask;
+  }
+
   const config = buildRunConfig({
     workspace,
     maxIterations: options.maxIterations,
     tokenLimit: options.tokenLimit,
     costLimit: options.costLimit,
     taskTimeout: options.taskTimeout,
+    verifyEachTask,
     verbose: options.verbose,
     dryRun: options.dryRun,
     sessionAction: 'create'

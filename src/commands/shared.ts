@@ -71,6 +71,7 @@ export interface RunConfigOptions {
   tokenLimit?: string;
   costLimit?: string;
   taskTimeout?: string;
+  verifyEachTask?: boolean;
   verbose?: boolean;
   dryRun?: boolean;
   sessionAction?: 'create' | 'update' | 'none';
@@ -108,6 +109,7 @@ export function buildRunConfig(options: RunConfigOptions): DevLoopConfig {
     taskTimeout: options.taskTimeout
       ? (parseInt(options.taskTimeout, 10) || DEFAULT_TASK_TIMEOUT_MINUTES) * 60000
       : DEFAULT_TASK_TIMEOUT_MINUTES * 60000,
-    sessionAction: options.sessionAction
+    sessionAction: options.sessionAction,
+    verifyEachTask: options.verifyEachTask
   };
 }

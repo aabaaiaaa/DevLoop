@@ -47,8 +47,8 @@ describe('integration: calculator project lifecycle', () => {
 
       await runLoop(config, { ...TEST_OVERRIDES, invoker });
 
-      // Filter out the final review call
-      const taskCalls = calls.filter(c => c.taskId !== 'REVIEW');
+      // Filter out the review and verification calls
+      const taskCalls = calls.filter(c => c.taskId !== 'REVIEW' && c.taskId !== 'VERIFICATION');
 
       // All 4 tasks should have been attempted
       assert.equal(taskCalls.length, 4);
@@ -69,28 +69,35 @@ describe('integration: calculator project lifecycle', () => {
         assert.equal(task.status, 'done', `${task.id} should be done`);
       }
 
-      // Progress should have 4 successful iterations
+      // Progress should have 4 task iterations + 1 verification iteration
       const progress = await readProgress(path.join(tmpDir, '.devloop', 'progress.md'));
       assert.ok(progress);
-      assert.equal(progress!.iterations.length, 4);
+      const taskIterations = progress!.iterations.filter(i => i.taskAttempted !== 'VERIFICATION');
+      assert.equal(taskIterations.length, 4);
       assert.equal(progress!.completed, 4);
-      for (const iter of progress!.iterations) {
+      for (const iter of taskIterations) {
         assert.equal(iter.exitStatus, 'success');
         assert.ok(iter.taskAttempted);
         assert.ok(iter.taskCompleted);
       }
+
+      // Verification iteration should exist
+      const verificationIter = progress!.iterations.find(i => i.taskAttempted === 'VERIFICATION');
+      assert.ok(verificationIter);
+      assert.equal(verificationIter!.exitStatus, 'success');
 
       // Session should be updated
       const session = await readSession(tmpDir);
       assert.ok(session);
       assert.equal(session!.lastIteration, 4);
 
-      // Task logs should exist
+      // Task logs should exist (4 tasks + VERIFICATION.log)
       const logsDir = path.join(tmpDir, '.devloop', 'logs');
       const logs = await fs.readdir(logsDir);
-      assert.equal(logs.length, 4);
+      assert.equal(logs.length, 5);
       assert.ok(logs.includes('TASK-001.log'));
       assert.ok(logs.includes('TASK-004.log'));
+      assert.ok(logs.includes('VERIFICATION.log'));
     });
 
     it('respects task dependencies (only runs eligible tasks)', async () => {
@@ -127,8 +134,8 @@ describe('integration: calculator project lifecycle', () => {
 
       await runLoop(config, { ...TEST_OVERRIDES, invoker });
 
-      // Filter out the final review call
-      const taskCalls = calls.filter(c => c.taskId !== 'REVIEW');
+      // Filter out the review and verification calls
+      const taskCalls = calls.filter(c => c.taskId !== 'REVIEW' && c.taskId !== 'VERIFICATION');
 
       // Should have 5 task calls: TASK-001, TASK-002 (fail), TASK-002 (succeed), TASK-003, TASK-004
       assert.equal(taskCalls.length, 5);
@@ -144,10 +151,11 @@ describe('integration: calculator project lifecycle', () => {
         assert.equal(task.status, 'done', `${task.id} should be done`);
       }
 
-      // Progress should show the failure and retry
+      // Progress should show the failure, retry, and verification
       const progress = await readProgress(path.join(tmpDir, '.devloop', 'progress.md'));
       assert.ok(progress);
-      assert.equal(progress!.iterations.length, 5);
+      const taskIters = progress!.iterations.filter(i => i.taskAttempted !== 'VERIFICATION');
+      assert.equal(taskIters.length, 5);
 
       const failedIter = progress!.iterations.find(
         i => i.exitStatus === 'error' && i.taskAttempted === 'TASK-002'
@@ -203,8 +211,8 @@ describe('integration: calculator project lifecycle', () => {
 
       await runLoop(phase2Config, { ...TEST_OVERRIDES, invoker: phase2Invoker });
 
-      // Filter out the final review call
-      const taskCalls = phase2Calls.filter(c => c.taskId !== 'REVIEW');
+      // Filter out the review and verification calls
+      const taskCalls = phase2Calls.filter(c => c.taskId !== 'REVIEW' && c.taskId !== 'VERIFICATION');
 
       // All 3 Phase 2 tasks should have been executed
       assert.equal(taskCalls.length, 3);

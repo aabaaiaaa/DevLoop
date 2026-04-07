@@ -55,6 +55,10 @@ cli.ts → commands/*.ts → core/loop.ts → core/claude.ts
                     parser/tasks.ts (parse tasks, find next task)
                               ↓
                     parser/progress.ts (log iteration)
+                              ↓
+                    consolidated verification (default) or per-task verification
+                              ↓
+                    final code review
 ```
 
 ### Key Abstractions
@@ -204,6 +208,17 @@ Tasks have a configurable timeout (default: 150 minutes / 2h30m) via `--task-tim
 - When the timeout fires, the Claude child process is killed via `SIGTERM`
 - The error is classified as `task_failure` (not `network_error`) so the task is retried rather than stopping the loop
 - The `wasTimedOut` flag in `invokeClaudeAutomated` overrides the normal `classifyError` result, which would otherwise match "timeout" as a `network_error` and stop the loop
+
+### Consolidated Verification
+
+By default, DevLoop defers test suite execution to a consolidated phase after all tasks complete. Quick checks (type-checking, linting) still run per-task.
+
+- **Default behavior**: Each task prompt tells Claude to run only quick checks (`tsc --noEmit`, linting) and skip test suites. After all tasks complete, a verification phase runs all test suites once.
+- **Consolidation**: Multiple filtered test commands (e.g., `npm test -- --grep "calculator"` from TASK-001, `npm test -- --grep "parser"` from TASK-002) are consolidated into a single `npm test` run. Different test runners (npm test + pytest) each run once.
+- **Fix/retry**: If tests fail, Claude identifies which task's changes likely caused the failure, fixes the code, and re-runs only the affected tests. Up to 3 fix cycles.
+- **Final review gate**: The final code review only runs if consolidated verification passes.
+- **Opt-out**: Use `--verify-each-task` CLI flag or `devloop config set verifyEachTask true` to use the old per-task verification behavior where each task runs its own tests before completing.
+- **Logging**: Verification results are logged to `.devloop/logs/VERIFICATION.log` and recorded in `progress.md`.
 
 ### API Error Classification
 

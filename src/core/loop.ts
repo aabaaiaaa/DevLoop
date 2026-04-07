@@ -339,6 +339,147 @@ The ONLY file you should create or write to is the review report at the path abo
   }
 }
 
+/**
+ * Run consolidated test verification after all tasks complete.
+ * Collects all verification commands, consolidates duplicates, runs tests,
+ * and fixes failures with up to 3 retry cycles.
+ */
+async function runDeferredVerification(
+  config: DevLoopConfig,
+  completedTasks: Task[],
+  invoke: typeof invokeClaudeAutomated,
+  loggerRef: Logger,
+  skipGit?: boolean
+): Promise<boolean> {
+  const logPath = path.join(config.workspacePath, '.devloop', 'logs', 'VERIFICATION.log');
+
+  console.log(chalk.cyan('\nRunning consolidated test verification...'));
+  const spinner = createSpinner();
+  const startTime = Date.now();
+  spinner.start(chalk.cyan('  Verifying all tasks...'));
+
+  const taskList = completedTasks.map(t =>
+    `### ${t.id}: ${t.title}\n- Description: ${t.description}\n- Verification: ${t.verification}`
+  ).join('\n\n');
+
+  const prompt = `You are performing consolidated test verification for a completed development project.
+Type-checking and linting were already done per-task. Your job is to run the TEST SUITES.
+
+WORKSPACE RESTRICTION:
+You are ONLY allowed to work within: ${config.workspacePath}
+- Do NOT read, write, or modify any files outside this directory
+- Do NOT run commands that affect files outside this directory
+- All file paths must be within the workspace
+- Do NOT modify any files in .devloop/ or .claude/ directories
+
+CONTEXT FILES:
+1. READ the full requirements document at: ${config.requirementsPath}
+2. The task list at ${config.tasksPath} contains all tasks.
+3. READ the progress file at: ${config.progressPath} (if it exists)
+
+COMPLETED TASKS AND THEIR VERIFICATION CRITERIA:
+
+${taskList}
+
+STEP 1 — CONSOLIDATE TEST COMMANDS:
+Look at all the verification commands above. Many tasks target the SAME test suite
+with different filters (e.g., \`npm test -- --grep "calculator"\`, \`npm test -- --grep "parser"\`).
+Instead of running each filtered command separately, consolidate them:
+- Multiple \`npm test -- --grep X\` commands → run \`npm test\` ONCE (full suite)
+- Multiple \`npx jest src/foo.test.ts\` commands → run \`npx jest\` ONCE (full suite)
+- Multiple \`pytest tests/foo/\` commands → run \`pytest\` ONCE
+- Different test runners (npm test + pytest) → run each runner once
+The goal is the MINIMUM number of test suite executions that covers all verifications.
+
+STEP 2 — RUN THE CONSOLIDATED TESTS:
+Run each consolidated test command. Record which tests pass and which fail.
+
+STEP 3 — FIX FAILURES (if any):
+If tests fail:
+  a. Use the task descriptions above to identify which task's changes likely caused each failure
+  b. Fix the issue in the relevant code
+  c. Re-run ONLY the specific failing tests (not the full suite again)
+  d. Repeat up to 3 fix cycles
+  e. A single fix may resolve multiple failures — that's fine
+
+IMPORTANT:
+- You may modify source code to fix test failures
+- Do NOT modify any files in .devloop/ or .claude/ directories
+- If you cannot fix a failure after 3 attempts, report which tests still fail and why
+
+STEP 4 — SUMMARY:
+Report:
+- Which consolidated test commands were run
+- Initial results (pass/fail counts)
+- What fixes were applied and which tasks they related to
+- What retries were performed and their outcomes
+- Any remaining failures`;
+
+  try {
+    const result = await invoke(prompt, config.workspacePath, {
+      verbose: config.verbose,
+      taskTimeout: config.taskTimeout
+    });
+
+    spinner.stop();
+
+    const duration = formatDuration(Math.round(result.duration / 1000));
+
+    // Write verification log
+    await writeTaskLog(config.workspacePath, 'VERIFICATION', 'Consolidated test verification', 0, prompt, result, loggerRef);
+
+    // Log to progress.md
+    const iterationLog: IterationLog = {
+      iteration: 0,
+      timestamp: new Date().toISOString(),
+      taskAttempted: 'VERIFICATION',
+      taskCompleted: null,  // Not a real task — don't count in completed tally
+      summary: result.success
+        ? 'Consolidated verification passed'
+        : `Consolidated verification failed: ${result.error?.split('\n')[0] || 'Tests did not pass'}`,
+      duration,
+      exitStatus: result.success ? 'success' : 'error',
+      tokenUsage: result.tokenUsage
+    };
+
+    try {
+      const tasks = await parseTasks(config.tasksPath);
+      await appendIteration(config.progressPath, tasks.tasks.length, iterationLog);
+    } catch {
+      // Best effort progress logging
+    }
+
+    if (result.success) {
+      console.log(chalk.green(`  Verification passed (${duration})`));
+      if (result.tokenUsage) {
+        console.log(chalk.gray(`    ${result.tokenUsage.totalTokens.toLocaleString()} tokens ($${result.tokenUsage.costUsd.toFixed(4)})`));
+      }
+
+      // Commit any fixes made during verification
+      if (!skipGit) {
+        await commitIteration(config.workspacePath, 0, 'VERIFICATION', 'Verification fixes', true, config.verbose);
+      }
+
+      return true;
+    } else {
+      console.log(chalk.red(`  Verification failed (${duration})`));
+      console.log(chalk.gray(`  Log: ${logPath}`));
+      if (result.output) {
+        // Print the last few lines of output as a summary
+        const lines = result.output.trim().split('\n');
+        const summary = lines.slice(-5).join('\n');
+        console.log(chalk.gray(summary));
+      }
+      return false;
+    }
+  } catch (err) {
+    spinner.stop();
+    loggerRef.error('Consolidated verification failed', err);
+    console.log(chalk.yellow('  Verification step failed — skipping.'));
+    return false;
+  }
+}
+
 // Per-iteration timing data collected during the run (for end-of-run statistics)
 interface IterationTiming {
   iteration: number;
@@ -748,6 +889,7 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
   if (config.taskTimeout) {
     console.log(chalk.gray(`Task timeout: ${formatDuration(config.taskTimeout / 1000)}`));
   }
+  console.log(chalk.gray(`Verification: ${config.verifyEachTask ? 'per-task' : 'consolidated (tests run after all tasks)'}`));
   console.log(chalk.green(`Workspace restriction: ENABLED (--add-dir)`));
 
   if (config.dryRun) {
@@ -980,7 +1122,7 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
 
     const prompt = buildTaskPrompt(
       task, config.requirementsPath, config.tasksPath, config.progressPath,
-      config.workspacePath, isRetry
+      config.workspacePath, isRetry, config.verifyEachTask ?? false
     );
 
     // Show spinner with elapsed time
@@ -1062,7 +1204,7 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
 
     // Record in progress.md
     const taskEndTime = taskStartTime + claudeResult.duration;
-    const timingSplitForLog = task.verification
+    const timingSplitForLog = (task.verification && config.verifyEachTask)
       ? estimateWorkVerificationSplit(toolEvents, task.verification, taskStartTime, taskEndTime)
       : null;
 
@@ -1113,7 +1255,7 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
         const t = claudeResult.tokenUsage;
         console.log(chalk.gray(`    ${t.totalTokens.toLocaleString()} tokens ($${t.costUsd.toFixed(4)}) | Session: $${sessionCost.toFixed(4)}`));
       }
-      displayTaskStats(toolEvents, task.verification, taskStartTime, taskEndTime);
+      displayTaskStats(toolEvents, config.verifyEachTask ? task.verification : undefined, taskStartTime, taskEndTime);
 
       if (!overrides?.skipGit) {
         const commitResult = await commitIteration(
@@ -1212,13 +1354,33 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
   // Clear crash marker
   await setActiveTask(config.workspacePath, null);
 
-  // Run final code review when ALL tasks completed
-  if (allTasksComplete || (finalProgress && finalProgress.completed === finalProgress.totalTasks)) {
-    await runFinalReview(config, invoke, logger, overrides?.skipGit, overrides?.skipStdin);
+  // Run consolidated verification and final review when ALL tasks completed
+  const allComplete = allTasksComplete || (finalProgress != null && finalProgress.completed === finalProgress.totalTasks);
+  if (allComplete) {
+    let verificationPassed = true;
+
+    // Run consolidated verification unless per-task verification was used
+    if (!config.verifyEachTask) {
+      const completedTasks = finalTaskList?.filter(t => t.status === 'done' && t.verification) ?? [];
+      if (completedTasks.length > 0) {
+        verificationPassed = await runDeferredVerification(
+          config, completedTasks, invoke, logger, overrides?.skipGit
+        );
+        if (!verificationPassed) {
+          console.log(chalk.yellow('Skipping final review — verification did not pass.'));
+          console.log(chalk.cyan('Run "devloop continue" to retry.'));
+        }
+      }
+    }
+
+    // Final review only if verification passed (or per-task verification was used)
+    if (config.verifyEachTask || verificationPassed) {
+      await runFinalReview(config, invoke, logger, overrides?.skipGit, overrides?.skipStdin);
+    }
   }
 
   // Show next steps when all tasks are done
-  if (allTasksComplete || (finalProgress && finalProgress.completed === finalProgress.totalTasks)) {
+  if (allComplete) {
     console.log(chalk.green('All tasks complete!'));
     console.log(chalk.cyan('Run "devloop continue" to start the next iteration.'));
     console.log(chalk.gray('Or clean up: rm -rf .devloop .claude'));

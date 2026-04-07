@@ -461,7 +461,8 @@ export function buildTaskPrompt(
   tasksPath: string,
   progressPath: string,
   workspacePath: string,
-  isRetry: boolean = false
+  isRetry: boolean = false,
+  verifyEachTask: boolean = false
 ): string {
   const retrySection = isRetry ? `RETRY CONTEXT:
 This task was previously attempted but interrupted. Your partial work from the
@@ -469,6 +470,23 @@ previous attempt has been committed to git. Review the existing code and git log
 before continuing — build on what is already there rather than starting from scratch.
 
 ` : '';
+
+  const verificationSection = verifyEachTask
+    ? `VERIFICATION REQUIREMENT:
+${task.verification}
+Before finishing, you MUST verify your work using the check above.
+If verification fails, fix the issue. Do not finish until verification passes.`
+    : `VERIFICATION REQUIREMENT:
+${task.verification}
+
+IMPORTANT: Only run quick checks now (type-checking like \`tsc --noEmit\`, linting).
+Do NOT run test suites (npm test, jest, vitest, mocha, pytest, go test, cargo test, etc.)
+— test verification will run in a consolidated phase after all tasks complete.
+If the verification above only contains test commands, skip verification entirely.`;
+
+  const verificationInstruction = verifyEachTask
+    ? '5. Run the verification check before finishing'
+    : '5. Run only quick verification checks (type-checking, linting) — skip test suites';
 
   return `You are working on an automated development task. Follow these instructions carefully:
 
@@ -490,17 +508,14 @@ YOUR CURRENT TASK:
 - Title: ${task.title}
 - Description: ${task.description}
 
-VERIFICATION REQUIREMENT:
-${task.verification}
-Before finishing, you MUST verify your work using the check above.
-If verification fails, fix the issue. Do not finish until verification passes.
+${verificationSection}
 
 ${retrySection}INSTRUCTIONS:
 1. Complete the task described above
 2. Make all necessary code changes WITHIN THE WORKSPACE ONLY
 3. Do NOT work on any other tasks
 4. Do NOT modify any files in .devloop/ or .claude/ directories
-5. Run the verification check before finishing
+${verificationInstruction}
 
 Begin working on ${task.id} now.`;
 }
