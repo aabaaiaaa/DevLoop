@@ -121,6 +121,10 @@ Each task should reference the requirements document for full context. The task 
   - Bad: \`npm test\` (runs everything — slow, may fail for unrelated reasons)
   - Good: \`tsc --noEmit src/calc.ts\` (type-check just the changed file)
   - Bad: \`tsc --noEmit\` (type-checks entire project)
+- **For E2E/integration test suites** (Playwright, Cypress, Selenium, etc.) that take a long time to run, ONLY target the specific test files relevant to the task — NEVER the entire E2E suite unless explicitly required:
+  - Good: \`npx playwright test tests/auth.spec.ts\` (only the auth E2E test)
+  - Bad: \`npx playwright test\` (runs ALL E2E tests — extremely slow)
+- **Match verification scope to change scope**: small changes need small targeted tests. Only run tests that exercise code paths touched by the task.
 - **Do NOT create any files other than requirements.md and tasks.md** — no source code, no config files, no project scaffolding
 
 After writing both documents, tell the user they need to exit this Claude session (Ctrl+C or /exit) to continue — DevLoop will commit the files and set up the workspace for task execution with "devloop run".
@@ -148,9 +152,9 @@ After writing both documents, tell the user they need to exit this Claude sessio
 
     if (priorContext.review) {
       section += `### Review & Recommendations\n\n`;
-      section += `The following review was generated after the previous iteration completed. `;
-      section += `Use these findings and recommendations to guide the next iteration.\n\n`;
-      section += `\`\`\`markdown\n${priorContext.review}\n\`\`\`\n\n`;
+      section += `A review was generated after the previous iteration completed.\n`;
+      section += `READ the review file at: .devloop/archive/iteration-${priorContext.iterationNumber}/review.md\n`;
+      section += `Use the findings and recommendations to guide the next iteration.\n\n`;
     }
 
     content += section;
@@ -323,7 +327,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   const commitConfig = await detectAndConfigureCommitFormat(workspace, initAction);
 
   console.log(chalk.yellow.bold('\n--- Tips ---'));
-  console.log(chalk.yellow('  Describe your project in detail — features, tech preferences, and how you want it tested.'));
+  console.log(chalk.yellow('  Tell Claude what you want to build. Start with the big picture — Claude will ask about details.'));
   console.log(chalk.yellow('  Claude will create a requirements doc and a task list with built-in verification steps.'));
   console.log(chalk.yellow('  Review the task list before finishing — ask Claude to split, reorder, or add tasks if needed.'));
   console.log(chalk.yellow('  When the documents are ready, exit with Ctrl+C or /exit so DevLoop can commit them.'));

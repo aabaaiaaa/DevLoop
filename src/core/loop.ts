@@ -391,6 +391,11 @@ Instead of running each filtered command separately, consolidate them:
 - Different test runners (npm test + pytest) → run each runner once
 The goal is the MINIMUM number of test suite executions that covers all verifications.
 
+EXCEPTION for long-running E2E/integration test suites (Playwright, Cypress, Selenium, etc.):
+Do NOT consolidate these into a full suite run. Instead, run only the specific E2E test
+files that cover functionality changed by the completed tasks. Full E2E suites can take
+30+ minutes — only run the full E2E suite if a task's verification explicitly requires it.
+
 STEP 2 — RUN THE CONSOLIDATED TESTS:
 Run each consolidated test command. Record which tests pass and which fail.
 
@@ -1105,7 +1110,7 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
     console.log(chalk.gray(`    Description: ${task.description}`));
     console.log(chalk.gray(`    Verification: ${task.verification}`));
     if (rawModeActive) {
-      console.log(chalk.gray(`    Press Q to stop after this task completes.`));
+      console.log(chalk.yellow(`    Press Q to stop after this task completes.`));
     }
 
     // Set crash marker
@@ -1383,7 +1388,7 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
   if (allComplete) {
     console.log(chalk.green('All tasks complete!'));
     console.log(chalk.cyan('Run "devloop continue" to start the next iteration.'));
-    console.log(chalk.gray('Or clean up: rm -rf .devloop .claude'));
+    console.log(chalk.gray('Or clean up: "devloop continue" → Remove all DevLoop files'));
   }
 }
 

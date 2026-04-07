@@ -199,7 +199,7 @@ When all tasks complete, `runFinalReview()` in `loop.ts` automatically invokes C
 
 The report is written to `.devloop/review.md` and automatically opened in the user's default application. It is committed to git and archived alongside other files when starting a new iteration.
 
-The review only runs when genuinely all tasks are complete — not on partial stops (Q key, cost limit, iteration limit, API errors). The `invoke` function is used (respects `overrides.invoker` for testing) and file opening is skipped during tests (via `skipStdin`/`skipOpen`).
+The review only runs when genuinely all tasks are complete — not on partial stops (Q key, cost limit, iteration limit, API errors). When consolidated verification is enabled (the default), the review is additionally gated on verification passing. The `invoke` function is used (respects `overrides.invoker` for testing) and file opening is skipped during tests (via `skipStdin`/`skipOpen`).
 
 ### Task Timeout
 
@@ -214,7 +214,7 @@ Tasks have a configurable timeout (default: 150 minutes / 2h30m) via `--task-tim
 By default, DevLoop defers test suite execution to a consolidated phase after all tasks complete. Quick checks (type-checking, linting) still run per-task.
 
 - **Default behavior**: Each task prompt tells Claude to run only quick checks (`tsc --noEmit`, linting) and skip test suites. After all tasks complete, a verification phase runs all test suites once.
-- **Consolidation**: Multiple filtered test commands (e.g., `npm test -- --grep "calculator"` from TASK-001, `npm test -- --grep "parser"` from TASK-002) are consolidated into a single `npm test` run. Different test runners (npm test + pytest) each run once.
+- **Consolidation**: Multiple filtered test commands (e.g., `npm test -- --grep "calculator"` from TASK-001, `npm test -- --grep "parser"` from TASK-002) are consolidated into a single `npm test` run. Different test runners (npm test + pytest) each run once. Exception: long-running E2E suites (Playwright, Cypress, Selenium) are NOT consolidated into full suite runs — only the specific E2E test files relevant to completed tasks are run.
 - **Fix/retry**: If tests fail, Claude identifies which task's changes likely caused the failure, fixes the code, and re-runs only the affected tests. Up to 3 fix cycles.
 - **Final review gate**: The final code review only runs if consolidated verification passes.
 - **Opt-out**: Use `--verify-each-task` CLI flag or `devloop config set verifyEachTask true` to use the old per-task verification behavior where each task runs its own tests before completing.
@@ -260,18 +260,21 @@ DevLoop supports iterating on requirements through `devloop continue`. The menu 
 **When all tasks are complete:**
 - View the review (if `review.md` exists)
 - Archive and start next phase
-- Archive and start next phase (informed by review) — includes review content in CLAUDE.md for Claude to use when planning the next iteration
+- Archive and start next phase (informed by review) — CLAUDE.md references the archived review file path for Claude to read when planning the next iteration
 
 **When tasks are incomplete / in init phase:**
 - Continue working on requirements (if in init phase or no tasks exist)
 - Continue running tasks (with progress count, e.g., "5/12 done")
 - Archive and start new requirements
 
+**Always available:**
+- Remove all DevLoop files — lists directories (`.devloop/`, `.claude/`) and warns about archived iterations, review docs, and logs before requiring explicit confirmation. Defaults to "no".
+
 State detection uses `detectWorkspaceState()` which checks session phase, task counts, and `review.md` existence.
 
 When archiving, the current `requirements.md`, `tasks.md`, `progress.md`, and `review.md` (if present) are copied to `.devloop/archive/iteration-{N}/`, then tasks, progress, and review are deleted so the next iteration starts fresh. Claude is spawned with prior work context to create new requirements and tasks.
 
-**Prior context**: To avoid bloating the CLAUDE.md with large task lists, the prior context includes only task titles (not full descriptions/verification steps). When the "informed by review" option is chosen, the review content is also included via the `PriorContext.review` field so Claude can use the recommendations to guide the next iteration. `loadPriorContext()` in `core/archive.ts` loads requirements, tasks, progress, and review from the archive directory.
+**Prior context**: To avoid bloating the CLAUDE.md, the prior context includes only task titles (not full descriptions/verification steps). When the "informed by review" option is chosen, CLAUDE.md references the archived review file by path (`.devloop/archive/iteration-{N}/review.md`) rather than embedding its content, so Claude reads the current version from disk and context isn't bloated. `loadPriorContext()` in `core/archive.ts` loads requirements, tasks, progress, and review from the archive directory.
 
 The `Session` type has an `iteration` field (1-based, defaults to 1 for backward compat). `devloop status` displays the iteration number when > 1.
 

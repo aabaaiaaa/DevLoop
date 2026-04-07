@@ -115,6 +115,7 @@ function buildMenuOptions(state: WorkspaceState): MenuItem[] {
     items.push({ key: String(key++), label: 'Archive and start new requirements', action: 'archive-describe' });
   }
 
+  items.push({ key: String(key++), label: 'Remove all DevLoop files', action: 'clean' });
   items.push({ key: String(key++), label: 'Cancel', action: 'cancel' });
   return items;
 }
@@ -198,6 +199,9 @@ export async function continueCommand(options: ContinueOptions): Promise<void> {
     case 'view-review':
       await viewReview(workspace);
       break;
+    case 'clean':
+      await cleanWorkspace(workspace);
+      break;
     case 'cancel':
       console.log(chalk.gray('Cancelled.'));
       break;
@@ -210,8 +214,10 @@ async function continueRequirements(workspace: string, sessionId: string | null)
   await updateSessionPhase(workspace, 'init');
 
   console.log(chalk.cyan('\nResuming requirements session...'));
-  console.log(chalk.gray('Continue refining your requirements with Claude.'));
-  console.log(chalk.gray('Exit with Ctrl+C or /exit when done.\n'));
+  console.log(chalk.yellow.bold('\n--- Tips ---'));
+  console.log(chalk.yellow('  Ask Claude to review the current requirements and tasks, then tell it what changes you need.'));
+  console.log(chalk.yellow('  Exit with Ctrl+C or /exit when done.'));
+  console.log(chalk.yellow('------------\n'));
 
   const child = spawnClaudeInteractive(workspace, sessionId);
 
@@ -339,10 +345,11 @@ async function archiveAndSpawnNextIteration(
   console.log(chalk.cyan(`\nStarting iteration ${newIteration}...`));
   console.log(chalk.yellow.bold('\n--- Tips ---'));
   if (includeReview && priorContext.review) {
-    console.log(chalk.yellow('  Claude has context from your previous iteration and the review document.'));
-    console.log(chalk.yellow('  It will use the review recommendations to inform the next phase of work.'));
+    console.log(chalk.yellow(`  Claude has the review from your last iteration. Tell Claude to:`));
+    console.log(chalk.yellow(`    - Read the review at .devloop/archive/iteration-${currentIteration}/review.md`));
+    console.log(chalk.yellow(`    - Suggest what to work on next based on the recommendations`));
   } else {
-    console.log(chalk.yellow('  Claude has context from your previous iteration — describe what to build next.'));
+    console.log(chalk.yellow('  Claude has context from your previous iteration. Describe what to build next.'));
   }
   console.log(chalk.yellow('  When the new requirements and tasks are ready, exit with Ctrl+C or /exit.'));
   console.log(chalk.yellow('------------\n'));
@@ -370,4 +377,72 @@ async function archiveAndSpawnNextIteration(
       console.log(chalk.red(`\nError during post-session setup: ${msg}`));
     }
   });
+}
+
+/**
+ * Remove all DevLoop files (.devloop/ and .claude/) from the workspace.
+ * Lists what will be removed and requires confirmation.
+ * @param confirmFn - Override for confirmation prompt (for testing)
+ * @returns true if files were removed, false if cancelled or nothing to remove
+ */
+export async function cleanWorkspace(
+  workspace: string,
+  confirmFn?: (question: string, defaultYes: boolean) => Promise<boolean>
+): Promise<boolean> {
+  const confirm = confirmFn ?? promptYesNo;
+  const devloopDir = path.join(workspace, '.devloop');
+  const claudeDir = path.join(workspace, '.claude');
+
+  // Check what exists
+  let hasDevloop = false;
+  let hasClaude = false;
+  try { await fs.access(devloopDir); hasDevloop = true; } catch {}
+  try { await fs.access(claudeDir); hasClaude = true; } catch {}
+
+  if (!hasDevloop && !hasClaude) {
+    console.log(chalk.yellow('No DevLoop files found to remove.'));
+    return false;
+  }
+
+  // List the full paths that will be removed
+  console.log(chalk.yellow.bold('\nThe following directories will be permanently removed:'));
+  if (hasDevloop) console.log(chalk.yellow(`  ${devloopDir}`));
+  if (hasClaude) console.log(chalk.yellow(`  ${claudeDir}`));
+
+  // Warn about significant data that will be lost
+  console.log(chalk.yellow.bold('\nThis includes:'));
+  if (hasDevloop) {
+    const archiveDir = path.join(devloopDir, 'archive');
+    try {
+      const entries = await fs.readdir(archiveDir);
+      const iterations = entries.filter(e => e.startsWith('iteration-'));
+      if (iterations.length > 0) {
+        console.log(chalk.yellow(`  - ${iterations.length} archived iteration(s) with requirements, tasks, and reviews`));
+      }
+    } catch {}
+    try { await fs.access(path.join(devloopDir, 'review.md')); console.log(chalk.yellow('  - Current review document')); } catch {}
+    try {
+      const logs = await fs.readdir(path.join(devloopDir, 'logs'));
+      if (logs.length > 0) console.log(chalk.yellow(`  - ${logs.length} task log(s)`));
+    } catch {}
+    console.log(chalk.yellow('  - Requirements, tasks, progress, session, and config'));
+  }
+  if (hasClaude) {
+    console.log(chalk.yellow('  - Claude workspace settings (CLAUDE.md, settings.json)'));
+  }
+
+  console.log();
+  const confirmed = await confirm(chalk.red('Are you sure you want to remove all DevLoop files? (y/N) '), false);
+
+  if (!confirmed) {
+    console.log(chalk.gray('Cancelled.'));
+    return false;
+  }
+
+  // Remove directories
+  if (hasDevloop) await fs.rm(devloopDir, { recursive: true, force: true });
+  if (hasClaude) await fs.rm(claudeDir, { recursive: true, force: true });
+
+  console.log(chalk.green('All DevLoop files removed.'));
+  return true;
 }

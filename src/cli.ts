@@ -61,7 +61,7 @@ const configCommand = program
 
 configCommand
   .command('set <key> <value>')
-  .description('Set a config value. Keys: devloopCommitFormat. Variable: {action}')
+  .description('Set a config value. Keys: devloopCommitFormat, verifyEachTask')
   .option('-w, --workspace <path>', 'Workspace directory')
   .action(configSetCommand);
 

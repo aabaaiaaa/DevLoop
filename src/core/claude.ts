@@ -475,7 +475,9 @@ before continuing — build on what is already there rather than starting from s
     ? `VERIFICATION REQUIREMENT:
 ${task.verification}
 Before finishing, you MUST verify your work using the check above.
-If verification fails, fix the issue. Do not finish until verification passes.`
+If verification fails, fix the issue. Do not finish until verification passes.
+For E2E/integration tests (Playwright, Cypress, Selenium): only run the specific test files
+relevant to this task, not the entire E2E suite — unless the verification explicitly requires it.`
     : `VERIFICATION REQUIREMENT:
 ${task.verification}
 
