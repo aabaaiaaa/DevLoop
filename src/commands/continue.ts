@@ -20,6 +20,7 @@ interface ContinueOptions {
   costLimit?: string;
   taskTimeout?: string;
   verifyEachTask?: boolean;
+  maxParallelTasks?: string;
   verbose?: boolean;
 }
 
@@ -130,7 +131,7 @@ export async function continueCommand(options: ContinueOptions): Promise<void> {
 
   const currentIteration = session?.iteration || 1;
 
-  printBanner(`Continue (Iteration ${currentIteration})`);
+  printBanner(`Continue (Phase ${currentIteration})`);
   console.log(chalk.gray(`Workspace: ${workspace}`));
 
   if (!session) {
@@ -143,7 +144,7 @@ export async function continueCommand(options: ContinueOptions): Promise<void> {
   console.log(chalk.gray(`Started: ${session.startedAt}`));
 
   if (session.phase === 'run') {
-    console.log(chalk.gray(`Last iteration: ${session.lastIteration}`));
+    console.log(chalk.gray(`Task attempts: ${session.lastIteration}`));
   }
 
   // Detect workspace state and show summary
@@ -251,6 +252,7 @@ async function continueRun(workspace: string, options: ContinueOptions): Promise
     costLimit: options.costLimit,
     taskTimeout: options.taskTimeout,
     verifyEachTask,
+    maxParallelTasks: options.maxParallelTasks,
     verbose: options.verbose,
     dryRun: false,
     sessionAction: 'update'

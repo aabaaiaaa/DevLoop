@@ -71,4 +71,14 @@ describe('buildRunConfig', () => {
     const config = buildRunConfig({ ...baseOptions, costLimit: '999' });
     assert.equal(config.costLimit, 500);
   });
+
+  it('passes through verifyEachTask', () => {
+    const config = buildRunConfig({ ...baseOptions, verifyEachTask: true });
+    assert.equal(config.verifyEachTask, true);
+  });
+
+  it('defaults verifyEachTask to undefined when not set', () => {
+    const config = buildRunConfig(baseOptions);
+    assert.equal(config.verifyEachTask, undefined);
+  });
 });

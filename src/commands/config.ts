@@ -5,7 +5,7 @@ interface ConfigOptions {
   workspace?: string;
 }
 
-const VALID_CONFIG_KEYS = ['devloopCommitFormat', 'verifyEachTask'];
+const VALID_CONFIG_KEYS = ['devloopCommitFormat', 'verifyEachTask', 'maxParallelTasks'];
 
 export async function configSetCommand(key: string, value: string, options: ConfigOptions): Promise<void> {
   if (!VALID_CONFIG_KEYS.includes(key)) {

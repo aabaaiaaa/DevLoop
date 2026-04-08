@@ -437,8 +437,13 @@ export async function getUncommittedChanges(workspace: string, ignorePaths?: str
     files = files.filter(file => {
       // Normalize path separators for cross-platform matching
       const normalizedFile = file.replace(/\\/g, '/');
-      // Check if any ignored path appears anywhere in the file path
-      return !ignorePaths.some(ignorePath => normalizedFile.includes(ignorePath));
+      return !ignorePaths.some(ignorePath => {
+        const normalizedIgnore = ignorePath.replace(/\\/g, '/');
+        // Match with or without leading dot (git root vs workspace relative paths)
+        // e.g., both ".devloop/" and "devloop/" should match
+        const withoutDot = normalizedIgnore.replace(/^\./, '');
+        return normalizedFile.includes(normalizedIgnore) || normalizedFile.includes(withoutDot);
+      });
     });
   }
 

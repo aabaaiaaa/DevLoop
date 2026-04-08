@@ -82,6 +82,7 @@ export interface DevLoopConfig {
   sessionAction?: 'create' | 'update' | 'none';  // Session modification to perform after uncommitted check
   taskTimeout?: number;  // Kill task after this many milliseconds (default: 2 hours)
   verifyEachTask?: boolean;  // When true, run verification per-task (old behavior). Default: false (consolidated verification at end)
+  maxParallelTasks?: number;  // Max tasks in a batch for parallel execution. Default: 5, min: 1.
 }
 
 export interface ProjectUsage {
@@ -130,5 +131,7 @@ export interface WorkspaceConfig {
   devloopCommitFormat?: string;
   /** When true, run verification per-task instead of consolidated at end. */
   verifyEachTask?: boolean;
+  /** Max tasks in a parallel batch. Default: 5. */
+  maxParallelTasks?: number;
 }
 

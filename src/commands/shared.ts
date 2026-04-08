@@ -72,6 +72,7 @@ export interface RunConfigOptions {
   costLimit?: string;
   taskTimeout?: string;
   verifyEachTask?: boolean;
+  maxParallelTasks?: string;
   verbose?: boolean;
   dryRun?: boolean;
   sessionAction?: 'create' | 'update' | 'none';
@@ -85,6 +86,7 @@ const MAX_COST_CEILING = 500;
 const DEFAULT_COST_LIMIT = 10;
 const DEFAULT_MAX_ITERATIONS = 100;
 const DEFAULT_TASK_TIMEOUT_MINUTES = 150;
+const DEFAULT_MAX_PARALLEL_TASKS = 5;
 
 export function buildRunConfig(options: RunConfigOptions): DevLoopConfig {
   const maxIterations = Math.min(
@@ -110,6 +112,9 @@ export function buildRunConfig(options: RunConfigOptions): DevLoopConfig {
       ? (parseInt(options.taskTimeout, 10) || DEFAULT_TASK_TIMEOUT_MINUTES) * 60000
       : DEFAULT_TASK_TIMEOUT_MINUTES * 60000,
     sessionAction: options.sessionAction,
-    verifyEachTask: options.verifyEachTask
+    verifyEachTask: options.verifyEachTask,
+    maxParallelTasks: Math.max(1, options.maxParallelTasks
+      ? parseInt(options.maxParallelTasks, 10) || DEFAULT_MAX_PARALLEL_TASKS
+      : DEFAULT_MAX_PARALLEL_TASKS)
   };
 }

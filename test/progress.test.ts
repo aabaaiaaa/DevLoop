@@ -130,6 +130,49 @@ Rate limit exceeded
     assert.equal(result.completed, 0);
     assert.equal(result.iterations.length, 0);
   });
+
+  it('parses batch entries with comma-separated task IDs', () => {
+    const content = `# DevLoop Progress Log
+
+## Summary
+- **Total Tasks**: 5
+- **Completed**: 3
+- **Remaining**: 2
+- **Last Updated**: 2025-06-01
+
+## Iteration Log
+
+### Iteration 1 - 2025-06-01T00:00:00Z
+- **Task Attempted**: TASK-001
+- **Task Completed**: TASK-001
+- **Summary**: Completed Project setup
+- **Duration**: 2m 0s
+- **Exit Status**: success
+
+### Iteration 2 - 2025-06-01T00:05:00Z
+- **Task Attempted**: TASK-002, TASK-003, TASK-004
+- **Task Completed**: TASK-002, TASK-003
+- **Summary**: Batch: 2/3 succeeded
+- **Duration**: 5m 0s
+- **Exit Status**: success
+`;
+
+    const result = parseProgressContent(content);
+    assert.equal(result.iterations.length, 2);
+
+    // Batch entry should preserve comma-separated values
+    const batchIter = result.iterations[1];
+    assert.equal(batchIter.taskAttempted, 'TASK-002, TASK-003, TASK-004');
+    assert.equal(batchIter.taskCompleted, 'TASK-002, TASK-003');
+
+    // getCompletedTaskIds should split them correctly
+    const completed = getCompletedTaskIds(result);
+    assert.equal(completed.size, 3);
+    assert.ok(completed.has('TASK-001'));
+    assert.ok(completed.has('TASK-002'));
+    assert.ok(completed.has('TASK-003'));
+    assert.ok(!completed.has('TASK-004'));
+  });
 });
 
 // --- generateProgressContent ---
@@ -313,6 +356,25 @@ describe('getCompletedTaskIds', () => {
 
     const ids = getCompletedTaskIds(progress);
     assert.equal(ids.size, 0);
+  });
+
+  it('handles comma-separated task IDs from batch execution', () => {
+    const progress: Progress = {
+      totalTasks: 4,
+      completed: 3,
+      remaining: 1,
+      lastUpdated: '2025-06-01',
+      iterations: [
+        { iteration: 1, timestamp: '2025-06-01', taskCompleted: 'TASK-001', summary: 'Done', duration: '10s', exitStatus: 'success' },
+        { iteration: 2, timestamp: '2025-06-01', taskCompleted: 'TASK-002, TASK-003', summary: 'Batch done', duration: '20s', exitStatus: 'success' },
+      ]
+    };
+
+    const ids = getCompletedTaskIds(progress);
+    assert.equal(ids.size, 3);
+    assert.ok(ids.has('TASK-001'));
+    assert.ok(ids.has('TASK-002'));
+    assert.ok(ids.has('TASK-003'));
   });
 
   it('deduplicates task IDs completed in multiple iterations', () => {

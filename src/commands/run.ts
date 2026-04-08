@@ -10,6 +10,7 @@ interface RunOptions {
   costLimit?: string;
   taskTimeout?: string;
   verifyEachTask?: boolean;
+  maxParallelTasks?: string;
   verbose?: boolean;
   dryRun?: boolean;
 }
@@ -33,6 +34,7 @@ export async function runCommand(options: RunOptions): Promise<void> {
     costLimit: options.costLimit,
     taskTimeout: options.taskTimeout,
     verifyEachTask,
+    maxParallelTasks: options.maxParallelTasks,
     verbose: options.verbose,
     dryRun: options.dryRun,
     sessionAction: 'create'

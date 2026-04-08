@@ -95,6 +95,36 @@ Extend the calculator with multiplication and division support.
 `, 'utf-8');
 }
 
+/** Write Phase 3 tasks (power/modulo) after archiving Phase 2 */
+export async function createPhase3Tasks(tmpDir: string): Promise<void> {
+  const devloopDir = path.join(tmpDir, '.devloop');
+
+  await fs.writeFile(path.join(devloopDir, 'requirements.md'), `# Calculator Project - Phase 3
+
+## Overview
+Add power and modulo operations to the calculator.
+
+## Requirements
+- Add power() and modulo() methods to Calculator
+- Include unit tests for new operations
+`, 'utf-8');
+
+  await fs.writeFile(path.join(devloopDir, 'tasks.md'), `# Calculator Tasks - Phase 3
+
+### TASK-008: Implement power function
+- **Status**: pending
+- **Dependencies**: none
+- **Description**: Add power(base, exp) method to Calculator class
+- **Verification**: Unit test for power() passes
+
+### TASK-009: Implement modulo function
+- **Status**: pending
+- **Dependencies**: none
+- **Description**: Add modulo(a, b) method to Calculator class
+- **Verification**: Unit test for modulo() passes
+`, 'utf-8');
+}
+
 // --- Mock Claude invoker ---
 
 const DEFAULT_TOKEN_USAGE: TokenUsage = {
@@ -135,8 +165,33 @@ export function createMockInvoker(options?: MockInvokerOptions) {
     const taskMatch = prompt.match(/Task ID: (TASK-\d+[a-z]*)/);
     const isReview = prompt.includes('final code review');
     const isVerification = prompt.includes('consolidated test verification');
-    const taskId = taskMatch?.[1] || (isReview ? 'REVIEW' : (isVerification ? 'VERIFICATION' : 'unknown'));
+    const isBatch = prompt.includes('TASKS TO COMPLETE:');
+    const taskId = taskMatch?.[1] || (isReview ? 'REVIEW' : (isVerification ? 'VERIFICATION' : (isBatch ? 'BATCH' : 'unknown')));
     calls.push({ prompt, taskId, workingDir });
+
+    // For batch prompts, extract all task IDs and generate TASK_RESULT lines
+    if (isBatch) {
+      const batchTaskIds = [...prompt.matchAll(/### (TASK-\d+[a-z]*):/g)].map(m => m[1]);
+      const resultLines = batchTaskIds.map(id => {
+        const override = options?.taskResults?.[id];
+        if (override && !override.success) {
+          return `TASK_RESULT: ${id}: FAILED: ${override.error || 'Task failed'}`;
+        }
+        return `TASK_RESULT: ${id}: SUCCESS`;
+      });
+
+      const result: ClaudeResult = {
+        success: true,
+        output: resultLines.join('\n'),
+        rawOutput: resultLines.join('\n'),
+        duration: 1500,
+        exitCode: 0,
+        signal: null,
+        tokenUsage: { ...DEFAULT_TOKEN_USAGE },
+        ...options?.defaultResult,
+      };
+      return result;
+    }
 
     const taskOverride = options?.taskResults?.[taskId];
 
