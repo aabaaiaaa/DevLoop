@@ -42,6 +42,9 @@ describe('iteration workflow', () => {
     const archivedProg = await fs.readFile(path.join(tmpDir, '.devloop', 'archive', 'iteration-1', 'progress.md'), 'utf-8');
     assert.ok(archivedProg.includes('Completed'));
 
+    // Verify requirements.md deleted
+    await assert.rejects(fs.access(path.join(tmpDir, '.devloop', 'requirements.md')));
+
     // Verify tasks.md deleted
     await assert.rejects(fs.access(path.join(tmpDir, '.devloop', 'tasks.md')));
 

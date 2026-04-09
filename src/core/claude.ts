@@ -8,7 +8,7 @@ import { Task, ClaudeResult, ClaudeErrorType, TokenUsage, ToolEvent } from '../t
 /**
  * Parse token usage from Claude JSON output
  */
-function parseTokenUsage(jsonOutput: any): TokenUsage | undefined {
+export function parseTokenUsage(jsonOutput: any): TokenUsage | undefined {
   try {
     const usage = jsonOutput?.usage;
     if (!usage) return undefined;
@@ -35,7 +35,7 @@ function parseTokenUsage(jsonOutput: any): TokenUsage | undefined {
  * Classifies an error from Claude CLI output to determine if it's an API error
  * (which should stop the loop) or a task failure (which can continue).
  */
-function classifyError(stderr: string, errorMessage: string | null): ClaudeErrorType {
+export function classifyError(stderr: string, errorMessage: string | null): ClaudeErrorType {
   const errorText = ((stderr || '') + (errorMessage || '')).toLowerCase();
 
   // Rate limit errors (400/429)
@@ -138,7 +138,7 @@ export async function ensureWorkspaceSettings(workspacePath: string): Promise<vo
 /**
  * Format a tool name and input into a human-readable activity string.
  */
-function formatToolActivity(toolName: string, toolInput: any): string {
+export function formatToolActivity(toolName: string, toolInput: any): string {
   // Extract relevant info from tool input
   let detail = '';
 

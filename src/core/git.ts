@@ -230,7 +230,7 @@ export async function ensureGitignore(workspace: string, verbose: boolean = fals
 /**
  * Detect if a git error is related to a pre-commit or commit-msg hook
  */
-function isHookError(error: string): boolean {
+export function isHookError(error: string): boolean {
   const hookIndicators = [
     'hook',
     'pre-commit',
@@ -398,27 +398,11 @@ export async function ensureGitRepo(workspace: string, verbose: boolean = false)
 }
 
 /**
- * Check if there are uncommitted changes in the workspace
- * Returns the list of changed files if any
+ * Parse git status --porcelain output into a list of file paths,
+ * optionally filtering out ignored path prefixes.
  */
-export async function getUncommittedChanges(workspace: string, ignorePaths?: string[]): Promise<{ hasChanges: boolean; files: string[] }> {
-  const gitAvailable = await isGitAvailable();
-  if (!gitAvailable) {
-    return { hasChanges: false, files: [] };
-  }
-
-  const isRepo = await isGitRepo(workspace);
-  if (!isRepo) {
-    return { hasChanges: false, files: [] };
-  }
-
-  const statusResult = await execGit(['status', '--porcelain'], workspace);
-  if (!statusResult.success || !statusResult.output.trim()) {
-    return { hasChanges: false, files: [] };
-  }
-
-  // Parse the porcelain output to get file names
-  let files = statusResult.output
+export function parseGitStatusOutput(statusOutput: string, ignorePaths?: string[]): string[] {
+  let files = statusOutput
     .split('\n')
     .filter(line => line.trim())
     .map(line => {
@@ -447,6 +431,30 @@ export async function getUncommittedChanges(workspace: string, ignorePaths?: str
     });
   }
 
+  return files;
+}
+
+/**
+ * Check if there are uncommitted changes in the workspace
+ * Returns the list of changed files if any
+ */
+export async function getUncommittedChanges(workspace: string, ignorePaths?: string[]): Promise<{ hasChanges: boolean; files: string[] }> {
+  const gitAvailable = await isGitAvailable();
+  if (!gitAvailable) {
+    return { hasChanges: false, files: [] };
+  }
+
+  const isRepo = await isGitRepo(workspace);
+  if (!isRepo) {
+    return { hasChanges: false, files: [] };
+  }
+
+  const statusResult = await execGit(['status', '--porcelain'], workspace);
+  if (!statusResult.success || !statusResult.output.trim()) {
+    return { hasChanges: false, files: [] };
+  }
+
+  const files = parseGitStatusOutput(statusResult.output, ignorePaths);
   return { hasChanges: files.length > 0, files };
 }
 

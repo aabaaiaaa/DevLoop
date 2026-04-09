@@ -9,6 +9,8 @@ npm run dev -- <command>    # Run CLI in development (e.g., npm run dev -- statu
 npm run build               # Compile TypeScript to dist/
 npm run typecheck           # Type-check without emitting
 npm run start               # Run compiled CLI from dist/
+npm test                    # Run tests
+npm run test:coverage       # Run tests with coverage (enforces thresholds)
 ```
 
 After changes, run `npm run build` to update the `dist/` folder. The CLI is globally linkable via `npm link`.
@@ -304,7 +306,7 @@ DevLoop supports iterating on requirements through `devloop continue`. The menu 
 
 State detection uses `detectWorkspaceState()` which checks session phase, task counts, and `review.md` existence.
 
-When archiving, the current `requirements.md`, `tasks.md`, `progress.md`, and `review.md` (if present) are copied to `.devloop/archive/iteration-{N}/` (directory naming uses "iteration" for backward compat), then tasks, progress, and review are deleted so the next phase starts fresh. Claude is spawned with prior work context to create new requirements and tasks.
+When archiving, the current `requirements.md`, `tasks.md`, `progress.md`, and `review.md` (if present) are copied to `.devloop/archive/iteration-{N}/` (directory naming uses "iteration" for backward compat), then all four files are deleted so the next phase starts fresh. Claude is spawned with prior work context to create new requirements and tasks.
 
 **Prior context**: To avoid bloating the CLAUDE.md, the prior context includes only task titles (not full descriptions/verification steps). When the "informed by review" option is chosen, CLAUDE.md references the archived review file by path (`.devloop/archive/iteration-{N}/review.md`) rather than embedding its content, so Claude reads the current version from disk and context isn't bloated. `loadPriorContext()` in `core/archive.ts` loads requirements, tasks, progress, and review from the archive directory.
 
@@ -340,3 +342,12 @@ Test fixtures in `test/fixtures/calculator.ts` provide:
 - `createFailThenSucceedMock()` — mock that fails a task N times then succeeds (for retry testing). Also recognizes review, verification, and batch prompts
 
 Integration tests in `test/integration.test.ts` cover the full lifecycle: task execution in dependency order, retry on failure, archive + new iteration (including a 3-phase test verifying archives survive across multiple iterations with `sessionAction: 'create'`), cost/iteration limits, API error handling, graceful shutdown, status data, final code review (creation, skipped on partial stop, archived correctly), and workspace cleanup.
+
+### Test Coverage
+
+`npm run test:coverage` runs tests with c8 and enforces minimum thresholds (75% lines, 75% functions, 70% branches). Coverage is configured in `.c8rc.json`:
+
+- **Included**: All `src/**` files
+- **Excluded**: CLI entry points (`index.ts`, `cli.ts`), command handlers (`commands/continue.ts`, `commands/init.ts`, `commands/config.ts`, `commands/run.ts`, `commands/status.ts`, `commands/workspace.ts`), type definitions (`types/index.ts`), and external-process-heavy modules (`core/git.ts`, `core/claude.ts`, `core/commit-format.ts`) — these are primarily wrappers around child process spawning that cannot be meaningfully unit tested
+
+Pure logic functions extracted from process-heavy modules are exported and tested directly: `classifyError()`, `parseTokenUsage()`, `formatToolActivity()` from `claude.ts`; `isHookError()`, `parseGitStatusOutput()` from `git.ts`.

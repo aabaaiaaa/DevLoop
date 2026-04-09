@@ -1,0 +1,19 @@
+{
+  "include": ["src/**"],
+  "exclude": [
+    "src/index.ts",
+    "src/cli.ts",
+    "src/types/index.ts",
+    "src/commands/continue.ts",
+    "src/commands/init.ts",
+    "src/commands/config.ts",
+    "src/commands/run.ts",
+    "src/commands/status.ts",
+    "src/commands/workspace.ts",
+    "src/core/commit-format.ts",
+    "src/core/git.ts",
+    "src/core/claude.ts"
+  ],
+  "reporter": ["text", "text-summary"],
+  "all": true
+}

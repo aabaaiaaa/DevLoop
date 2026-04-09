@@ -437,6 +437,7 @@ The animated spinner (`src/core/spinner.ts`) is a built-in implementation with n
 | Package | Purpose |
 |---------|---------|
 | @types/node | TypeScript type definitions |
+| c8 | Test coverage reporting and threshold enforcement |
 | typescript | TypeScript compiler (build time) |
 | tsx | TypeScript execution for dev/test |
 

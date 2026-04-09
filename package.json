@@ -15,7 +15,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/*.test.ts"
+    "test": "node --import tsx --test test/*.test.ts",
+    "test:coverage": "c8 --check-coverage --lines 75 --functions 75 --branches 70 node --import tsx --test test/*.test.ts"
   },
   "keywords": [
     "cli",
@@ -27,6 +28,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "c8": "^11.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.7.0"
   },
