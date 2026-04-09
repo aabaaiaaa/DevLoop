@@ -8,7 +8,7 @@ import { Task, ClaudeResult, ClaudeErrorType, TokenUsage, ToolEvent } from '../t
 /**
  * Parse token usage from Claude JSON output
  */
-function parseTokenUsage(jsonOutput: any): TokenUsage | undefined {
+export function parseTokenUsage(jsonOutput: any): TokenUsage | undefined {
   try {
     const usage = jsonOutput?.usage;
     if (!usage) return undefined;
@@ -35,7 +35,7 @@ function parseTokenUsage(jsonOutput: any): TokenUsage | undefined {
  * Classifies an error from Claude CLI output to determine if it's an API error
  * (which should stop the loop) or a task failure (which can continue).
  */
-function classifyError(stderr: string, errorMessage: string | null): ClaudeErrorType {
+export function classifyError(stderr: string, errorMessage: string | null): ClaudeErrorType {
   const errorText = ((stderr || '') + (errorMessage || '')).toLowerCase();
 
   // Rate limit errors (400/429)
@@ -138,7 +138,7 @@ export async function ensureWorkspaceSettings(workspacePath: string): Promise<vo
 /**
  * Format a tool name and input into a human-readable activity string.
  */
-function formatToolActivity(toolName: string, toolInput: any): string {
+export function formatToolActivity(toolName: string, toolInput: any): string {
   // Extract relevant info from tool input
   let detail = '';
 
@@ -193,6 +193,9 @@ export interface InvokeClaudeOptions {
   verbose?: boolean;
   onProgress?: (activity: string) => void;
   onToolCall?: (event: ToolEvent) => void;
+  taskTimeout?: number;  // Kill child process after this many milliseconds
+  /** Called with a function that kills the child process tree. Caller can store it to abort later. */
+  onSpawn?: (kill: () => void) => void;
 }
 
 export async function invokeClaudeAutomated(
@@ -238,6 +241,31 @@ export async function invokeClaudeAutomated(
     const promptContent = fsSync.readFileSync(promptFile, 'utf-8');
     child.stdin?.write(promptContent);
     child.stdin?.end();
+
+    // Expose kill function to caller (for skip/abort support)
+    if (options.onSpawn && child.pid) {
+      const pid = child.pid;
+      options.onSpawn(() => {
+        if (process.platform === 'win32') {
+          // On Windows, child.kill() only kills the shell, not the process tree.
+          // Use taskkill /T to kill the entire tree (Claude + any spawned test runners).
+          spawn('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore' });
+        } else {
+          // On Unix, kill the process group to include child processes
+          try { process.kill(-pid, 'SIGTERM'); } catch { child.kill('SIGTERM'); }
+        }
+      });
+    }
+
+    // Task timeout — kill the child process if it exceeds the limit
+    let wasTimedOut = false;
+    let timeoutTimer: NodeJS.Timeout | null = null;
+    if (options.taskTimeout && options.taskTimeout > 0) {
+      timeoutTimer = setTimeout(() => {
+        wasTimedOut = true;
+        child.kill('SIGTERM');
+      }, options.taskTimeout);
+    }
 
     let stderr = '';
     let resultText = '';
@@ -333,6 +361,9 @@ export async function invokeClaudeAutomated(
     });
 
     child.on('close', (code, signal) => {
+      // Clear timeout timer
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+
       // Clean up temp file
       try {
         fsSync.unlinkSync(promptFile);
@@ -355,7 +386,7 @@ export async function invokeClaudeAutomated(
       }
 
       const duration = Date.now() - startTime;
-      const hasError = code !== 0 || isError;
+      const hasError = code !== 0 || isError || wasTimedOut;
 
       // Combine all available error information
       let errorMessage: string | undefined;
@@ -373,7 +404,15 @@ export async function invokeClaudeAutomated(
         }
         errorMessage = parts.join('\n') || 'Unknown error (no exit code, no signal, no stderr)';
       }
-      const errorType = hasError ? classifyError(errorMessage || stderr || '', null) : undefined;
+      let errorType = hasError ? classifyError(errorMessage || stderr || '', null) : undefined;
+
+      // Override for timeout: classify as task_failure so the loop retries
+      // instead of stopping (classifyError would match "timeout" as network_error)
+      if (wasTimedOut) {
+        const timeoutMinutes = Math.round((options.taskTimeout || 0) / 60000);
+        errorMessage = `Task exceeded ${timeoutMinutes} minute time limit`;
+        errorType = 'task_failure';
+      }
 
       resolve({
         success: !hasError,
@@ -389,6 +428,9 @@ export async function invokeClaudeAutomated(
     });
 
     child.on('error', (err) => {
+      // Clear timeout timer
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+
       // Clean up temp file
       try {
         fsSync.unlinkSync(promptFile);
@@ -430,26 +472,15 @@ export function spawnClaudeInteractive(
   return child;
 }
 
-export interface BuildTaskPromptOptions {
-  isRetry?: boolean;
-  priorDiff?: string;
-  isParallel?: boolean;
-}
-
 export function buildTaskPrompt(
   task: Task,
   requirementsPath: string,
   tasksPath: string,
   progressPath: string,
   workspacePath: string,
-  options: boolean | BuildTaskPromptOptions = false
+  isRetry: boolean = false,
+  verifyEachTask: boolean = false
 ): string {
-  // Backward compat: accept boolean (isRetry) or options object
-  const opts: BuildTaskPromptOptions = typeof options === 'boolean'
-    ? { isRetry: options }
-    : options;
-  const { isRetry = false, priorDiff, isParallel = false } = opts;
-
   const retrySection = isRetry ? `RETRY CONTEXT:
 This task was previously attempted but interrupted. Your partial work from the
 previous attempt has been committed to git. Review the existing code and git log
@@ -457,20 +488,24 @@ before continuing — build on what is already there rather than starting from s
 
 ` : '';
 
-  const priorDiffSection = priorDiff ? `PRIOR ATTEMPT:
-A previous attempt at this task produced the following changes, but the codebase
-has been modified since by other tasks completing concurrently. Reapply these
-changes to the current codebase, adapting as needed to work with the updated code:
+  const verificationSection = verifyEachTask
+    ? `VERIFICATION REQUIREMENT:
+${task.verification}
+Before finishing, you MUST verify your work using the check above.
+If verification fails, fix the issue. Do not finish until verification passes.
+For E2E/integration tests (Playwright, Cypress, Selenium): only run the specific test files
+relevant to this task, not the entire E2E suite — unless the verification explicitly requires it.`
+    : `VERIFICATION REQUIREMENT:
+${task.verification}
 
-\`\`\`diff
-${priorDiff}
-\`\`\`
+IMPORTANT: Only run quick checks now (type-checking like \`tsc --noEmit\`, linting).
+Do NOT run test suites (npm test, jest, vitest, mocha, pytest, go test, cargo test, etc.)
+— test verification will run in a consolidated phase after all tasks complete.
+If the verification above only contains test commands, skip verification entirely.`;
 
-` : '';
-
-  const parallelNote = isParallel
-    ? '\nNOTE: Other tasks may be running concurrently. Focus only on your assigned task.\n'
-    : '';
+  const verificationInstruction = verifyEachTask
+    ? '5. Run the verification check before finishing'
+    : '5. Run only quick verification checks (type-checking, linting) — skip test suites';
 
   return `You are working on an automated development task. Follow these instructions carefully:
 
@@ -480,7 +515,7 @@ You are ONLY allowed to work within: ${workspacePath}
 - Do NOT run commands that affect files outside this directory
 - All file paths must be within the workspace
 - Do NOT modify any files in .devloop/ or .claude/ directories
-${parallelNote}
+
 CONTEXT FILES:
 1. READ the full requirements document at: ${requirementsPath}
    This contains the detailed project plan and context for all tasks.
@@ -492,19 +527,113 @@ YOUR CURRENT TASK:
 - Title: ${task.title}
 - Description: ${task.description}
 
-VERIFICATION REQUIREMENT:
-${task.verification}
-Before finishing, you MUST verify your work using the check above.
-If verification fails, fix the issue. Do not finish until verification passes.
+${verificationSection}
 
-${retrySection}${priorDiffSection}INSTRUCTIONS:
+${retrySection}INSTRUCTIONS:
 1. Complete the task described above
 2. Make all necessary code changes WITHIN THE WORKSPACE ONLY
 3. Do NOT work on any other tasks
 4. Do NOT modify any files in .devloop/ or .claude/ directories
-5. Run the verification check before finishing
+${verificationInstruction}
 
 Begin working on ${task.id} now.`;
+}
+
+export function buildBatchPrompt(
+  tasks: Task[],
+  requirementsPath: string,
+  tasksPath: string,
+  progressPath: string,
+  workspacePath: string,
+  verifyEachTask: boolean = false
+): string {
+  const taskSection = tasks.map(t => `### ${t.id}: ${t.title}
+- Description: ${t.description}
+- Verification: ${t.verification}`).join('\n\n');
+
+  const verificationInstructions = verifyEachTask
+    ? `Each agent MUST run its task's verification before reporting success.
+If verification fails, the agent should fix the issue. Do not report success until verification passes.
+For E2E/integration tests (Playwright, Cypress, Selenium): only run the specific test files
+relevant to the task, not the entire E2E suite — unless the verification explicitly requires it.`
+    : `Agents should run only quick checks (type-checking, linting) per task.
+Do NOT run test suites — those will run in a consolidated verification phase after all tasks complete.
+If a task's verification only contains test commands, skip verification for that task.`;
+
+  return `You are working on multiple development tasks simultaneously. You have access to
+the Agent tool to run tasks in parallel.
+
+WORKSPACE RESTRICTION:
+You are ONLY allowed to work within: ${workspacePath}
+- Do NOT read, write, or modify any files outside this directory
+- Do NOT run commands that affect files outside this directory
+- All file paths must be within the workspace
+- Do NOT modify any files in .devloop/ or .claude/ directories
+
+CONTEXT FILES:
+1. READ the full requirements document at: ${requirementsPath}
+   This contains the detailed project plan and context for all tasks.
+2. The task list at ${tasksPath} contains all tasks — do NOT edit this file.
+3. READ the progress file at: ${progressPath} (if it exists)
+
+TASKS TO COMPLETE:
+
+${taskSection}
+
+EXECUTION STRATEGY:
+1. Read the requirements and understand all tasks above
+2. Analyze which tasks touch the same files or have overlapping concerns
+3. Group tasks that can safely run in parallel (touch different files/modules)
+4. For each parallel group, use the Agent tool to spawn agents:
+   - Give each agent a clear description including the task ID, what to do, and the workspace path
+   - Include the task ID in the agent description (e.g., "TASK-003: Implement auth middleware")
+   - Each agent works within ${workspacePath}
+5. After parallel agents complete, run any remaining tasks that had file conflicts sequentially
+6. Do NOT modify any files in .devloop/ or .claude/ directories
+
+VERIFICATION:
+${verificationInstructions}
+
+RESULT FORMAT:
+When all tasks are done, report the result for EACH task in this EXACT format (one per line):
+TASK_RESULT: TASK-XXX: SUCCESS
+TASK_RESULT: TASK-YYY: FAILED: reason for failure
+
+DevLoop parses these lines to determine task outcomes. Every task listed above MUST have a TASK_RESULT line.`;
+}
+
+export interface BatchTaskResult {
+  success: boolean;
+  error?: string;
+}
+
+export function parseBatchResults(
+  output: string,
+  taskIds: string[]
+): Map<string, BatchTaskResult> {
+  const results = new Map<string, BatchTaskResult>();
+
+  // Parse TASK_RESULT lines
+  const lines = output.split('\n');
+  for (const line of lines) {
+    const match = line.match(/TASK_RESULT:\s*(TASK-\d+[a-z]*):\s*(SUCCESS|FAILED)(?::\s*(.+))?/);
+    if (match) {
+      const [, taskId, status, reason] = match;
+      results.set(taskId, {
+        success: status === 'SUCCESS',
+        error: reason?.trim()
+      });
+    }
+  }
+
+  // Tasks not mentioned are treated as failed
+  for (const id of taskIds) {
+    if (!results.has(id)) {
+      results.set(id, { success: false, error: 'No result reported by Claude' });
+    }
+  }
+
+  return results;
 }
 
 export async function checkClaudeInstalled(): Promise<boolean> {

@@ -2,8 +2,9 @@ import * as readline from 'readline';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import chalk from 'chalk';
-import { resolveWorkspace, getRequirementsPath, getTasksPath } from '../core/config.js';
+import { resolveWorkspace, getRequirementsPath, getTasksPath, readWorkspaceConfig } from '../core/config.js';
 import { readSession, createSession, updateSessionPhase } from '../core/session.js';
+import { Session } from '../types/index.js';
 import { spawnClaudeInteractive } from '../core/claude.js';
 import { requireClaudeInstalled, buildRunConfig, promptUser as promptYesNo, printBanner } from './shared.js';
 import { runLoop } from '../core/loop.js';
@@ -15,9 +16,11 @@ import { ensureGitRepo } from '../core/git.js';
 interface ContinueOptions {
   workspace?: string;
   maxIterations?: string;
-  maxWorkers?: string;
   tokenLimit?: string;
   costLimit?: string;
+  taskTimeout?: string;
+  verifyEachTask?: boolean;
+  maxParallelTasks?: string;
   verbose?: boolean;
 }
 
@@ -35,6 +38,91 @@ async function promptChoice(question: string): Promise<string> {
   });
 }
 
+// --- Workspace state detection ---
+
+interface WorkspaceState {
+  phase: 'init' | 'run';
+  hasRequirements: boolean;
+  hasTasks: boolean;
+  hasReview: boolean;
+  taskCounts: { total: number; pending: number; inProgress: number; done: number };
+  allTasksDone: boolean;
+}
+
+async function detectWorkspaceState(workspace: string, session: Session): Promise<WorkspaceState> {
+  const requirementsPath = getRequirementsPath(workspace);
+  const reviewPath = path.join(workspace, '.devloop', 'review.md');
+
+  let hasRequirements = false;
+  let hasTasks = false;
+  let hasReview = false;
+  let taskCounts = { total: 0, pending: 0, inProgress: 0, done: 0 };
+
+  try { await fs.access(requirementsPath); hasRequirements = true; } catch {}
+  try { await fs.access(reviewPath); hasReview = true; } catch {}
+
+  try {
+    const tasksPath = getTasksPath(workspace);
+    const taskList = await parseTasks(tasksPath);
+    hasTasks = taskList.tasks.length > 0;
+    taskCounts = {
+      total: taskList.tasks.length,
+      pending: taskList.tasks.filter(t => t.status === 'pending').length,
+      inProgress: taskList.tasks.filter(t => t.status === 'in-progress').length,
+      done: taskList.tasks.filter(t => t.status === 'done').length,
+    };
+  } catch {}
+
+  return {
+    phase: session.phase,
+    hasRequirements,
+    hasTasks,
+    hasReview,
+    taskCounts,
+    allTasksDone: hasTasks && taskCounts.done === taskCounts.total,
+  };
+}
+
+// --- Dynamic menu ---
+
+interface MenuItem {
+  key: string;
+  label: string;
+  action: string;
+}
+
+function buildMenuOptions(state: WorkspaceState): MenuItem[] {
+  const items: MenuItem[] = [];
+  let key = 1;
+
+  if (state.allTasksDone) {
+    // All tasks completed — show completion-oriented options
+    if (state.hasReview) {
+      items.push({ key: String(key++), label: 'View the review', action: 'view-review' });
+    }
+    items.push({ key: String(key++), label: 'Archive and start next phase', action: 'archive-describe' });
+    if (state.hasReview) {
+      items.push({ key: String(key++), label: 'Archive and start next phase (informed by review)', action: 'archive-review' });
+    }
+  } else {
+    // Not all done — show work-continuation options
+    if (state.phase === 'init' || !state.hasTasks) {
+      items.push({ key: String(key++), label: 'Continue working on requirements', action: 'continue-requirements' });
+    }
+    if (state.hasTasks && !state.allTasksDone) {
+      const { done, total } = state.taskCounts;
+      items.push({ key: String(key++), label: `Continue running tasks (${done}/${total} done)`, action: 'continue-run' });
+    }
+    items.push({ key: String(key++), label: 'Archive and start new requirements', action: 'archive-describe' });
+  }
+
+  items.push({ key: String(key++), label: 'Remove all DevLoop files', action: 'clean' });
+  items.push({ key: String(key++), label: 'Cancel', action: 'cancel' });
+  return items;
+}
+
+// --- Command entry point ---
+
 export async function continueCommand(options: ContinueOptions): Promise<void> {
   await requireClaudeInstalled();
 
@@ -43,7 +131,7 @@ export async function continueCommand(options: ContinueOptions): Promise<void> {
 
   const currentIteration = session?.iteration || 1;
 
-  printBanner(`Continue (Iteration ${currentIteration})`);
+  printBanner(`Continue (Phase ${currentIteration})`);
   console.log(chalk.gray(`Workspace: ${workspace}`));
 
   if (!session) {
@@ -56,45 +144,81 @@ export async function continueCommand(options: ContinueOptions): Promise<void> {
   console.log(chalk.gray(`Started: ${session.startedAt}`));
 
   if (session.phase === 'run') {
-    console.log(chalk.gray(`Last iteration: ${session.lastIteration}`));
+    console.log(chalk.gray(`Task attempts: ${session.lastIteration}`));
+  }
+
+  // Detect workspace state and show summary
+  const state = await detectWorkspaceState(workspace, session);
+
+  if (state.hasTasks) {
+    const { done, total, inProgress, pending } = state.taskCounts;
+    if (state.allTasksDone) {
+      console.log(chalk.green(`\nAll ${total} tasks completed.`));
+      if (state.hasReview) {
+        console.log(chalk.gray('Review document available.'));
+      }
+    } else {
+      console.log(chalk.gray(`\nTasks: ${done}/${total} done, ${inProgress} in progress, ${pending} pending`));
+    }
+  } else if (state.phase === 'init') {
+    console.log(chalk.gray('\nNo tasks yet (still in requirements phase).'));
   }
 
   console.log();
 
-  // Ask user what they want to do
+  // Build and display contextual menu
+  const menuItems = buildMenuOptions(state);
+
   console.log(chalk.cyan('What would you like to do?'));
-  console.log(chalk.white('  1. Continue working on requirements'));
-  console.log(chalk.white('  2. Continue running tasks'));
-  console.log(chalk.white('  3. Archive and start new requirements'));
-  console.log(chalk.white('  4. Cancel'));
+  for (const item of menuItems) {
+    console.log(chalk.white(`  ${item.key}. ${item.label}`));
+  }
   console.log();
 
-  const choice = await promptChoice('Enter choice (1/2/3/4): ');
+  const validKeys = menuItems.map(m => m.key).join('/');
+  const choice = await promptChoice(`Enter choice (${validKeys}): `);
 
-  switch (choice) {
-    case '1':
+  const selected = menuItems.find(m => m.key === choice);
+  if (!selected) {
+    console.log(chalk.red('Invalid choice.'));
+    return;
+  }
+
+  switch (selected.action) {
+    case 'continue-requirements':
       await continueRequirements(workspace, session.sessionId);
       break;
-    case '2':
+    case 'continue-run':
       await continueRun(workspace, options);
       break;
-    case '3':
+    case 'archive-describe':
       await startNextIteration(workspace, currentIteration);
       break;
-    case '4':
+    case 'archive-review':
+      await startNextIterationFromReview(workspace, currentIteration);
+      break;
+    case 'view-review':
+      await viewReview(workspace);
+      break;
+    case 'clean':
+      await cleanWorkspace(workspace);
+      break;
+    case 'cancel':
       console.log(chalk.gray('Cancelled.'));
       break;
-    default:
-      console.log(chalk.red('Invalid choice.'));
   }
 }
+
+// --- Action handlers ---
 
 async function continueRequirements(workspace: string, sessionId: string | null): Promise<void> {
   await updateSessionPhase(workspace, 'init');
 
   console.log(chalk.cyan('\nResuming requirements session...'));
-  console.log(chalk.gray('Continue refining your requirements with Claude.'));
-  console.log(chalk.gray('Exit with Ctrl+C or /exit when done.\n'));
+  console.log(chalk.yellow.bold('\n--- Tips ---'));
+  console.log(chalk.yellow('  Ask Claude to review the current requirements and tasks, then tell it what changes you need.'));
+  console.log(chalk.yellow('  Exit with Ctrl+C or /exit when done.'));
+  console.log(chalk.yellow('------------\n'));
 
   const child = spawnClaudeInteractive(workspace, sessionId);
 
@@ -114,12 +238,21 @@ async function continueRequirements(workspace: string, sessionId: string | null)
 }
 
 async function continueRun(workspace: string, options: ContinueOptions): Promise<void> {
+  // CLI flag takes precedence, fall back to workspace config
+  let verifyEachTask = options.verifyEachTask;
+  if (verifyEachTask === undefined) {
+    const wsConfig = await readWorkspaceConfig(workspace);
+    verifyEachTask = wsConfig.verifyEachTask;
+  }
+
   const config = buildRunConfig({
     workspace,
     maxIterations: options.maxIterations,
-    maxWorkers: options.maxWorkers,
     tokenLimit: options.tokenLimit,
     costLimit: options.costLimit,
+    taskTimeout: options.taskTimeout,
+    verifyEachTask,
+    maxParallelTasks: options.maxParallelTasks,
     verbose: options.verbose,
     dryRun: false,
     sessionAction: 'update'
@@ -131,6 +264,18 @@ async function continueRun(workspace: string, options: ContinueOptions): Promise
   }
 
   await runLoop(config);
+}
+
+async function viewReview(workspace: string): Promise<void> {
+  const reviewPath = path.join(workspace, '.devloop', 'review.md');
+  try {
+    const content = await fs.readFile(reviewPath, 'utf-8');
+    console.log(chalk.cyan('\n--- Review ---\n'));
+    console.log(content);
+    console.log(chalk.cyan('\n--- End Review ---\n'));
+  } catch {
+    console.log(chalk.red('review.md not found.'));
+  }
 }
 
 async function startNextIteration(workspace: string, currentIteration: number): Promise<void> {
@@ -152,16 +297,28 @@ async function startNextIteration(workspace: string, currentIteration: number): 
       }
     }
   } catch {
-    // Can't parse requirements, proceed anyway
+    // Can't parse tasks, proceed anyway
   }
 
+  await archiveAndSpawnNextIteration(workspace, currentIteration, false);
+}
+
+async function startNextIterationFromReview(workspace: string, currentIteration: number): Promise<void> {
+  await archiveAndSpawnNextIteration(workspace, currentIteration, true);
+}
+
+async function archiveAndSpawnNextIteration(
+  workspace: string,
+  currentIteration: number,
+  includeReview: boolean
+): Promise<void> {
   console.log(chalk.cyan(`\nArchiving iteration ${currentIteration}...`));
 
   // 1. Archive current iteration
   await archiveIteration(workspace, currentIteration);
   console.log(chalk.green(`  Archived to .devloop/archive/iteration-${currentIteration}/`));
 
-  // 2. Load prior context for CLAUDE.md
+  // 2. Load prior context for CLAUDE.md (now includes review from archive)
   const priorContext = await loadPriorContext(workspace, currentIteration);
 
   // 3. Generate context-aware CLAUDE.md
@@ -172,10 +329,12 @@ async function startNextIteration(workspace: string, currentIteration: number): 
     iterationNumber: currentIteration,
     requirements: priorContext.requirements,
     tasks: priorContext.tasks,
-    progress: priorContext.progress
+    progress: priorContext.progress,
+    review: includeReview ? priorContext.review : undefined,
   });
   await fs.writeFile(claudeMdPath, claudeMdContent, 'utf-8');
-  console.log(chalk.green(`  Updated CLAUDE.md with prior work context`));
+  const reviewNote = includeReview && priorContext.review ? ' and review' : '';
+  console.log(chalk.green(`  Updated CLAUDE.md with prior work context${reviewNote}`));
 
   // 4. Create new session with incremented iteration
   const newIteration = currentIteration + 1;
@@ -187,7 +346,13 @@ async function startNextIteration(workspace: string, currentIteration: number): 
 
   console.log(chalk.cyan(`\nStarting iteration ${newIteration}...`));
   console.log(chalk.yellow.bold('\n--- Tips ---'));
-  console.log(chalk.yellow('  Claude has context from your previous iteration — describe what to build next.'));
+  if (includeReview && priorContext.review) {
+    console.log(chalk.yellow(`  Claude has the review from your last iteration. Tell Claude to:`));
+    console.log(chalk.yellow(`    - Read the review at .devloop/archive/iteration-${currentIteration}/review.md`));
+    console.log(chalk.yellow(`    - Suggest what to work on next based on the recommendations`));
+  } else {
+    console.log(chalk.yellow('  Claude has context from your previous iteration. Describe what to build next.'));
+  }
   console.log(chalk.yellow('  When the new requirements and tasks are ready, exit with Ctrl+C or /exit.'));
   console.log(chalk.yellow('------------\n'));
 
@@ -214,4 +379,72 @@ async function startNextIteration(workspace: string, currentIteration: number): 
       console.log(chalk.red(`\nError during post-session setup: ${msg}`));
     }
   });
+}
+
+/**
+ * Remove all DevLoop files (.devloop/ and .claude/) from the workspace.
+ * Lists what will be removed and requires confirmation.
+ * @param confirmFn - Override for confirmation prompt (for testing)
+ * @returns true if files were removed, false if cancelled or nothing to remove
+ */
+export async function cleanWorkspace(
+  workspace: string,
+  confirmFn?: (question: string, defaultYes: boolean) => Promise<boolean>
+): Promise<boolean> {
+  const confirm = confirmFn ?? promptYesNo;
+  const devloopDir = path.join(workspace, '.devloop');
+  const claudeDir = path.join(workspace, '.claude');
+
+  // Check what exists
+  let hasDevloop = false;
+  let hasClaude = false;
+  try { await fs.access(devloopDir); hasDevloop = true; } catch {}
+  try { await fs.access(claudeDir); hasClaude = true; } catch {}
+
+  if (!hasDevloop && !hasClaude) {
+    console.log(chalk.yellow('No DevLoop files found to remove.'));
+    return false;
+  }
+
+  // List the full paths that will be removed
+  console.log(chalk.yellow.bold('\nThe following directories will be permanently removed:'));
+  if (hasDevloop) console.log(chalk.yellow(`  ${devloopDir}`));
+  if (hasClaude) console.log(chalk.yellow(`  ${claudeDir}`));
+
+  // Warn about significant data that will be lost
+  console.log(chalk.yellow.bold('\nThis includes:'));
+  if (hasDevloop) {
+    const archiveDir = path.join(devloopDir, 'archive');
+    try {
+      const entries = await fs.readdir(archiveDir);
+      const iterations = entries.filter(e => e.startsWith('iteration-'));
+      if (iterations.length > 0) {
+        console.log(chalk.yellow(`  - ${iterations.length} archived iteration(s) with requirements, tasks, and reviews`));
+      }
+    } catch {}
+    try { await fs.access(path.join(devloopDir, 'review.md')); console.log(chalk.yellow('  - Current review document')); } catch {}
+    try {
+      const logs = await fs.readdir(path.join(devloopDir, 'logs'));
+      if (logs.length > 0) console.log(chalk.yellow(`  - ${logs.length} task log(s)`));
+    } catch {}
+    console.log(chalk.yellow('  - Requirements, tasks, progress, session, and config'));
+  }
+  if (hasClaude) {
+    console.log(chalk.yellow('  - Claude workspace settings (CLAUDE.md, settings.json)'));
+  }
+
+  console.log();
+  const confirmed = await confirm(chalk.red('Are you sure you want to remove all DevLoop files? (y/N) '), false);
+
+  if (!confirmed) {
+    console.log(chalk.gray('Cancelled.'));
+    return false;
+  }
+
+  // Remove directories
+  if (hasDevloop) await fs.rm(devloopDir, { recursive: true, force: true });
+  if (hasClaude) await fs.rm(claudeDir, { recursive: true, force: true });
+
+  console.log(chalk.green('All DevLoop files removed.'));
+  return true;
 }

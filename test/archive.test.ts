@@ -32,13 +32,17 @@ describe('archiveIteration', () => {
     assert.equal(archivedProg, 'prog content');
   });
 
-  it('deletes tasks.md and progress.md after archiving', async () => {
+  it('deletes requirements.md, tasks.md, and progress.md after archiving', async () => {
     await fs.writeFile(path.join(tmpDir, '.devloop', 'requirements.md'), 'req', 'utf-8');
     await fs.writeFile(path.join(tmpDir, '.devloop', 'tasks.md'), 'tasks', 'utf-8');
     await fs.writeFile(path.join(tmpDir, '.devloop', 'progress.md'), 'prog', 'utf-8');
 
     await archiveIteration(tmpDir, 1);
 
+    await assert.rejects(
+      fs.access(path.join(tmpDir, '.devloop', 'requirements.md')),
+      'requirements.md should be deleted'
+    );
     await assert.rejects(
       fs.access(path.join(tmpDir, '.devloop', 'tasks.md')),
       'tasks.md should be deleted'
@@ -47,15 +51,6 @@ describe('archiveIteration', () => {
       fs.access(path.join(tmpDir, '.devloop', 'progress.md')),
       'progress.md should be deleted'
     );
-  });
-
-  it('keeps requirements.md in place after archiving', async () => {
-    await fs.writeFile(path.join(tmpDir, '.devloop', 'requirements.md'), 'req', 'utf-8');
-
-    await archiveIteration(tmpDir, 1);
-
-    const content = await fs.readFile(path.join(tmpDir, '.devloop', 'requirements.md'), 'utf-8');
-    assert.equal(content, 'req');
   });
 
   it('handles missing progress.md gracefully', async () => {

@@ -15,6 +15,7 @@ export interface PriorContext {
   requirements: string | null;
   tasks: string | null;
   progress: string | null;
+  review?: string | null;
 }
 
 export function generateWorkspaceClaudeMd(workspace: string, priorContext?: PriorContext): string {
@@ -41,6 +42,8 @@ You are helping the user plan their project. This happens in three phases.
 
 ### Phase 1 — Discovery (do NOT write any files)
 
+**IMPORTANT: Use the AskUserQuestion tool whenever you need the user to make a choice or decision.** This includes both technical choices and design decisions. Only use free-form conversation for open-ended discovery questions where multiple-choice doesn't make sense.
+
 Start by asking the user to describe their project in their own words. Understand:
 
 - What does the project do? Who uses it?
@@ -49,7 +52,7 @@ Start by asking the user to describe their project in their own words. Understan
 - What does "done" look like — what are the success criteria?
 - Are there any edge cases or failure modes to handle?
 
-Use natural conversation for these — let the user explain freely and ask follow-up questions.
+Use natural conversation for open-ended questions — let the user explain freely and ask follow-up questions.
 
 For standard technical choices, use the **AskUserQuestion tool** to present options rather than asking open-ended questions. These include things like:
 
@@ -108,11 +111,20 @@ Each task should reference the requirements document for full context. The task 
 
 ### Task Rules
 
-- Task IDs must be sequential: TASK-001, TASK-002, TASK-003, etc.
+- Task IDs must be sequential: TASK-001, TASK-002, TASK-003, etc. For larger tasks that need to be broken down, use letter suffixes: TASK-001a, TASK-001b, etc.
+- **Tasks must be small and focused** — each should be completable by an automated AI agent in approximately 10-20 minutes. If a task would take longer, break it into smaller subtasks using letter suffixes. Large tasks will time out and fail.
 - Status must always be \`pending\` for new tasks
 - Dependencies: \`none\` or comma-separated task IDs (e.g., \`TASK-001, TASK-002\`)
 - Descriptions should be clear and actionable
-- **Every task MUST have a Verification field** with a specific, testable check (e.g., "run npm test", "build completes with no errors", "endpoint returns 200")
+- **Every task MUST have a Verification field** with a specific, **targeted** check. Run only the tests relevant to the task, NOT the full test suite. Examples:
+  - Good: \`npm test -- --grep "calculator"\` or \`npx jest src/calc.test.ts\`
+  - Bad: \`npm test\` (runs everything — slow, may fail for unrelated reasons)
+  - Good: \`tsc --noEmit src/calc.ts\` (type-check just the changed file)
+  - Bad: \`tsc --noEmit\` (type-checks entire project)
+- **For E2E/integration test suites** (Playwright, Cypress, Selenium, etc.) that take a long time to run, ONLY target the specific test files relevant to the task — NEVER the entire E2E suite unless explicitly required:
+  - Good: \`npx playwright test tests/auth.spec.ts\` (only the auth E2E test)
+  - Bad: \`npx playwright test\` (runs ALL E2E tests — extremely slow)
+- **Match verification scope to change scope**: small changes need small targeted tests. Only run tests that exercise code paths touched by the task.
 - **Do NOT create any files other than requirements.md and tasks.md** — no source code, no config files, no project scaffolding
 
 After writing both documents, tell the user they need to exit this Claude session (Ctrl+C or /exit) to continue — DevLoop will commit the files and set up the workspace for task execution with "devloop run".
@@ -131,11 +143,18 @@ After writing both documents, tell the user they need to exit this Claude sessio
     if (priorContext.tasks) {
       // Extract just task titles to keep context concise
       const taskTitles = priorContext.tasks
-        .match(/### (TASK-\d+:\s*.+)/g)
+        .match(/### (TASK-\d+[a-z]*:\s*.+)/g)
         ?.map(line => `- ${line.replace('### ', '')}`) || [];
       if (taskTitles.length > 0) {
         section += `### Previous Tasks (${taskTitles.length} tasks)\n\n${taskTitles.join('\n')}\n\n`;
       }
+    }
+
+    if (priorContext.review) {
+      section += `### Review & Recommendations\n\n`;
+      section += `A review was generated after the previous iteration completed.\n`;
+      section += `READ the review file at: .devloop/archive/iteration-${priorContext.iterationNumber}/review.md\n`;
+      section += `Use the findings and recommendations to guide the next iteration.\n\n`;
     }
 
     content += section;
@@ -308,7 +327,7 @@ export async function initCommand(options: InitOptions): Promise<void> {
   const commitConfig = await detectAndConfigureCommitFormat(workspace, initAction);
 
   console.log(chalk.yellow.bold('\n--- Tips ---'));
-  console.log(chalk.yellow('  Describe your project in detail — features, tech preferences, and how you want it tested.'));
+  console.log(chalk.yellow('  Tell Claude what you want to build. Start with the big picture — Claude will ask about details.'));
   console.log(chalk.yellow('  Claude will create a requirements doc and a task list with built-in verification steps.'));
   console.log(chalk.yellow('  Review the task list before finishing — ask Claude to split, reorder, or add tasks if needed.'));
   console.log(chalk.yellow('  When the documents are ready, exit with Ctrl+C or /exit so DevLoop can commit them.'));

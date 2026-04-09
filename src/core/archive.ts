@@ -4,8 +4,8 @@ import { getRequirementsPath, getTasksPath, getProgressPath } from './config.js'
 
 /**
  * Archive the current iteration's requirements.md, tasks.md, and progress.md
- * into .devloop/archive/iteration-{N}/, then delete tasks.md and progress.md.
- * Requirements.md stays in place until overwritten by the next init.
+ * into .devloop/archive/iteration-{N}/, then delete all four files
+ * so the next iteration starts fresh.
  */
 export async function archiveIteration(workspace: string, iterationNumber: number): Promise<void> {
   const archiveDir = path.join(workspace, '.devloop', 'archive', `iteration-${iterationNumber}`);
@@ -46,6 +46,13 @@ export async function archiveIteration(workspace: string, iterationNumber: numbe
     await fs.writeFile(path.join(archiveDir, 'review.md'), content, 'utf-8');
   } catch {
     // review.md may not exist (e.g., run was stopped before completion)
+  }
+
+  // Delete requirements.md so the next iteration starts fresh
+  try {
+    await fs.unlink(requirementsPath);
+  } catch {
+    // Already gone
   }
 
   // Delete tasks.md so the next iteration starts fresh
@@ -94,12 +101,14 @@ export async function loadPriorContext(workspace: string, iterationNumber: numbe
   requirements: string | null;
   tasks: string | null;
   progress: string | null;
+  review: string | null;
 }> {
   const archiveDir = path.join(workspace, '.devloop', 'archive', `iteration-${iterationNumber}`);
 
   let requirements: string | null = null;
   let tasks: string | null = null;
   let progress: string | null = null;
+  let review: string | null = null;
 
   try {
     requirements = await fs.readFile(path.join(archiveDir, 'requirements.md'), 'utf-8');
@@ -119,5 +128,11 @@ export async function loadPriorContext(workspace: string, iterationNumber: numbe
     // Not found
   }
 
-  return { requirements, tasks, progress };
+  try {
+    review = await fs.readFile(path.join(archiveDir, 'review.md'), 'utf-8');
+  } catch {
+    // Not found
+  }
+
+  return { requirements, tasks, progress, review };
 }

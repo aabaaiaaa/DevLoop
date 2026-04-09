@@ -59,8 +59,7 @@ export interface Session {
   sessionId: string | null;
   lastIteration: number;
   startedAt: string;
-  activeTask?: ActiveTask | null;      // backward compat (sequential)
-  activeTasks?: ActiveTask[];          // parallel mode
+  activeTask?: ActiveTask | null;
   iteration: number;  // 1-based requirements iteration count
   devloopVersion?: string;
 }
@@ -81,7 +80,9 @@ export interface DevLoopConfig {
   tokenLimit?: number;  // Stop if session tokens exceed this limit
   costLimit?: number;   // Stop if session cost (USD) exceeds this limit
   sessionAction?: 'create' | 'update' | 'none';  // Session modification to perform after uncommitted check
-  maxWorkers?: number;  // Max concurrent Claude instances (default 5)
+  taskTimeout?: number;  // Kill task after this many milliseconds (default: 2 hours)
+  verifyEachTask?: boolean;  // When true, run verification per-task (old behavior). Default: false (consolidated verification at end)
+  maxParallelTasks?: number;  // Max tasks in a batch for parallel execution. Default: 5, min: 1.
 }
 
 export interface ProjectUsage {
@@ -128,36 +129,9 @@ export interface ClaudeResult {
 export interface WorkspaceConfig {
   /** Format for all DevLoop commits. Use {action} placeholder. */
   devloopCommitFormat?: string;
+  /** When true, run verification per-task instead of consolidated at end. */
+  verifyEachTask?: boolean;
+  /** Max tasks in a parallel batch. Default: 5. */
+  maxParallelTasks?: number;
 }
 
-// --- Parallel execution types ---
-
-export interface WorktreeInfo {
-  worktreePath: string;
-  branchName: string;
-  taskId: string;
-}
-
-export interface MergeResult {
-  success: boolean;
-  conflictFiles?: string[];
-  verificationFailed?: boolean;
-}
-
-export interface WorkerState {
-  task: Task;
-  worktree: WorktreeInfo;
-  promise: Promise<WorkerResult>;
-  startTime: number;
-}
-
-export interface WorkerResult {
-  taskId: string;
-  taskTitle: string;
-  claudeResult: ClaudeResult;
-  worktree: WorktreeInfo;
-  priorDiff?: string;
-  mergeFailureCount: number;
-  toolEvents: ToolEvent[];
-  verification?: string;  // the task's verification field, for timing analysis
-}

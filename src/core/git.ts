@@ -189,7 +189,7 @@ export async function ensureGitignore(workspace: string, verbose: boolean = fals
     }
 
     // Critical patterns that should always be present
-    const criticalPatterns = ['node_modules/', '.env', '.worktrees/'];
+    const criticalPatterns = ['node_modules/', '.env'];
     const missingPatterns: string[] = [];
 
     for (const pattern of criticalPatterns) {
@@ -230,7 +230,7 @@ export async function ensureGitignore(workspace: string, verbose: boolean = fals
 /**
  * Detect if a git error is related to a pre-commit or commit-msg hook
  */
-function isHookError(error: string): boolean {
+export function isHookError(error: string): boolean {
   const hookIndicators = [
     'hook',
     'pre-commit',
@@ -398,6 +398,43 @@ export async function ensureGitRepo(workspace: string, verbose: boolean = false)
 }
 
 /**
+ * Parse git status --porcelain output into a list of file paths,
+ * optionally filtering out ignored path prefixes.
+ */
+export function parseGitStatusOutput(statusOutput: string, ignorePaths?: string[]): string[] {
+  let files = statusOutput
+    .split('\n')
+    .filter(line => line.trim())
+    .map(line => {
+      let filePart = line.substring(3).trim();
+      // Strip surrounding quotes (git quotes filenames with special characters)
+      if (filePart.startsWith('"') && filePart.endsWith('"')) {
+        filePart = filePart.slice(1, -1);
+      }
+      // Renamed files show as "old -> new"; use the new name
+      const arrowIndex = filePart.indexOf(' -> ');
+      return arrowIndex >= 0 ? filePart.substring(arrowIndex + 4) : filePart;
+    });
+
+  // Filter out ignored paths
+  if (ignorePaths && ignorePaths.length > 0) {
+    files = files.filter(file => {
+      // Normalize path separators for cross-platform matching
+      const normalizedFile = file.replace(/\\/g, '/');
+      return !ignorePaths.some(ignorePath => {
+        const normalizedIgnore = ignorePath.replace(/\\/g, '/');
+        // Match with or without leading dot (git root vs workspace relative paths)
+        // e.g., both ".devloop/" and "devloop/" should match
+        const withoutDot = normalizedIgnore.replace(/^\./, '');
+        return normalizedFile.includes(normalizedIgnore) || normalizedFile.includes(withoutDot);
+      });
+    });
+  }
+
+  return files;
+}
+
+/**
  * Check if there are uncommitted changes in the workspace
  * Returns the list of changed files if any
  */
@@ -417,31 +454,7 @@ export async function getUncommittedChanges(workspace: string, ignorePaths?: str
     return { hasChanges: false, files: [] };
   }
 
-  // Parse the porcelain output to get file names
-  let files = statusResult.output
-    .split('\n')
-    .filter(line => line.trim())
-    .map(line => {
-      let filePart = line.substring(3).trim();
-      // Strip surrounding quotes (git quotes filenames with special characters)
-      if (filePart.startsWith('"') && filePart.endsWith('"')) {
-        filePart = filePart.slice(1, -1);
-      }
-      // Renamed files show as "old -> new"; use the new name
-      const arrowIndex = filePart.indexOf(' -> ');
-      return arrowIndex >= 0 ? filePart.substring(arrowIndex + 4) : filePart;
-    });
-
-  // Filter out ignored paths
-  if (ignorePaths && ignorePaths.length > 0) {
-    files = files.filter(file => {
-      // Normalize path separators for cross-platform matching
-      const normalizedFile = file.replace(/\\/g, '/');
-      // Check if any ignored path appears anywhere in the file path
-      return !ignorePaths.some(ignorePath => normalizedFile.includes(ignorePath));
-    });
-  }
-
+  const files = parseGitStatusOutput(statusResult.output, ignorePaths);
   return { hasChanges: files.length > 0, files };
 }
 
@@ -562,16 +575,6 @@ export async function commitIteration(
   }
 
   return { committed: result.committed };
-}
-
-/**
- * Configure git settings needed for parallel worktree execution.
- * - gc.auto=0 prevents concurrent garbage collection issues
- * - core.longpaths=true avoids Windows 260-char path limit issues
- */
-export async function configureForParallel(workspace: string): Promise<void> {
-  await execGit(['config', 'gc.auto', '0'], workspace);
-  await execGit(['config', 'core.longpaths', 'true'], workspace);
 }
 
 /**

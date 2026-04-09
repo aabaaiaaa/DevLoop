@@ -3,14 +3,12 @@ import { createSpinner, Spinner } from './spinner.js';
 import { spawn as spawnProcess } from 'child_process';
 import * as fsSync from 'fs';
 import * as path from 'path';
-import { DevLoopConfig, IterationLog, ActiveTask, Task, Progress, ClaudeErrorType, WorkerState, WorkerResult, WorktreeInfo, ToolEvent } from '../types/index.js';
+import { DevLoopConfig, IterationLog, ActiveTask, Task, Progress, ClaudeErrorType, ToolEvent } from '../types/index.js';
 import { parseTasks, getNextTask, getAvailableTasks, updateTaskStatus } from '../parser/tasks.js';
 import { readProgress, appendIteration, getCompletedTaskIds } from '../parser/progress.js';
-import { invokeClaudeAutomated, buildTaskPrompt, isApiError } from './claude.js';
-import { createSession, readSession, writeSession, updateSessionPhase, updateSessionIteration, setActiveTasks, getActiveTasks } from './session.js';
-import { commitIteration, commitInterruptedWork, ensureGitRepo, getUncommittedChanges, configureForParallel } from './git.js';
-import { createWorktree, prepareWorktree, mergeWorktree, getWorktreeDiff, cleanupWorktree, cleanupStaleWorktrees } from './worktree.js';
-import { AsyncMutex } from './mutex.js';
+import { invokeClaudeAutomated, buildTaskPrompt, buildBatchPrompt, parseBatchResults, isApiError } from './claude.js';
+import { createSession, readSession, writeSession, updateSessionPhase, updateSessionIteration, setActiveTask, getActiveTask } from './session.js';
+import { commitIteration, commitInterruptedWork, ensureGitRepo, getUncommittedChanges } from './git.js';
 import { readProjectUsage, addProjectUsage } from './config.js';
 import { createLogger, Logger } from './logger.js';
 import { promptUser, printBanner } from '../commands/shared.js';
@@ -20,6 +18,8 @@ import * as fs from 'fs/promises';
 let stopRequested = false;
 let rawModeActive = false;
 let activeSpinner: Spinner | null = null;
+let inVerificationPhase = false;
+let killVerificationProcess: (() => void) | null = null;
 
 // Terminal title management
 let originalTitle: string | null = null;
@@ -263,9 +263,17 @@ async function runFinalReview(
   const reviewPath = path.join(config.workspacePath, '.devloop', 'review.md');
 
   console.log(chalk.cyan('\nRunning final code review...'));
+  console.log(chalk.gray('  Cross-referencing requirements against implementation, reviewing'));
+  console.log(chalk.gray('  code quality, test coverage, and generating recommendations.'));
   const spinner = createSpinner();
   const startTime = Date.now();
-  spinner.start(chalk.cyan('  Claude reviewing project...'));
+  const spinnerState = startTimedSpinner(
+    spinner,
+    '  Reviewing project',
+    startTime,
+    config.verbose,
+    'DevLoop: Final code review'
+  );
 
   const prompt = `You are performing a final code review of this project.
 
@@ -304,9 +312,11 @@ The ONLY file you should create or write to is the review report at the path abo
 
   try {
     const result = await invoke(prompt, config.workspacePath, {
-      verbose: config.verbose
+      verbose: config.verbose,
+      onProgress: (activity) => { updateSpinnerActivity(spinnerState, activity); }
     });
 
+    if (spinnerState.interval) clearInterval(spinnerState.interval);
     spinner.stop();
 
     if (result.success) {
@@ -335,9 +345,213 @@ The ONLY file you should create or write to is the review report at the path abo
       console.log(chalk.gray('  You can review the project manually.'));
     }
   } catch (err) {
+    if (spinnerState.interval) clearInterval(spinnerState.interval);
     spinner.stop();
     loggerRef.error('Final review failed', err);
     console.log(chalk.yellow('  Review step failed — skipping.'));
+  }
+}
+
+/**
+ * Run consolidated test verification after all tasks complete.
+ * Collects all verification commands, consolidates duplicates, runs tests,
+ * and fixes failures with up to 3 retry cycles.
+ */
+async function runDeferredVerification(
+  config: DevLoopConfig,
+  completedTasks: Task[],
+  invoke: typeof invokeClaudeAutomated,
+  loggerRef: Logger,
+  skipGit?: boolean
+): Promise<boolean> {
+  const logPath = path.join(config.workspacePath, '.devloop', 'logs', 'VERIFICATION.log');
+
+  console.log(chalk.cyan(`\nRunning consolidated test verification (${completedTasks.length} tasks)...`));
+  console.log(chalk.gray('  Verification criteria to consolidate:'));
+  for (const t of completedTasks) {
+    console.log(chalk.gray(`    ${t.id}: ${t.verification}`));
+  }
+  console.log(chalk.gray('  Claude will consolidate overlapping test commands into the minimum'));
+  console.log(chalk.gray('  number of suite runs, then fix and retest any failures.'));
+  if (rawModeActive) {
+    console.log(chalk.yellow('  Press Q to skip verification and proceed to review.'));
+  } else {
+    console.log(chalk.yellow('  Type q + Enter to skip verification and proceed to review.'));
+  }
+  // Reset stopRequested so we can detect Q presses during verification
+  stopRequested = false;
+  inVerificationPhase = true;
+  const spinner = createSpinner();
+  const startTime = Date.now();
+  const spinnerState = startTimedSpinner(
+    spinner,
+    '  Verifying all tasks',
+    startTime,
+    config.verbose,
+    'DevLoop: Verifying all tasks'
+  );
+  activeSpinner = spinner;
+
+  const taskList = completedTasks.map(t =>
+    `### ${t.id}: ${t.title}\n- Description: ${t.description}\n- Verification: ${t.verification}`
+  ).join('\n\n');
+
+  const prompt = `You are performing consolidated test verification for a completed development project.
+Type-checking and linting were already done per-task. Your job is to run the TEST SUITES.
+
+WORKSPACE RESTRICTION:
+You are ONLY allowed to work within: ${config.workspacePath}
+- Do NOT read, write, or modify any files outside this directory
+- Do NOT run commands that affect files outside this directory
+- All file paths must be within the workspace
+- Do NOT modify any files in .devloop/ or .claude/ directories
+
+CONTEXT FILES:
+1. READ the full requirements document at: ${config.requirementsPath}
+2. The task list at ${config.tasksPath} contains all tasks.
+3. READ the progress file at: ${config.progressPath} (if it exists)
+
+COMPLETED TASKS AND THEIR VERIFICATION CRITERIA:
+
+${taskList}
+
+STEP 1 — CONSOLIDATE TEST COMMANDS:
+Look at all the verification commands above. Many tasks target the SAME test suite
+with different filters (e.g., \`npm test -- --grep "calculator"\`, \`npm test -- --grep "parser"\`).
+Instead of running each filtered command separately, consolidate them:
+- Multiple \`npm test -- --grep X\` commands → run \`npm test\` ONCE (full suite)
+- Multiple \`npx jest src/foo.test.ts\` commands → run \`npx jest\` ONCE (full suite)
+- Multiple \`pytest tests/foo/\` commands → run \`pytest\` ONCE
+- Different test runners (npm test + pytest) → run each runner once
+The goal is the MINIMUM number of test suite executions that covers all verifications.
+
+EXCEPTION for long-running E2E/integration test suites (Playwright, Cypress, Selenium, etc.):
+Do NOT consolidate these into a full suite run. Instead, run only the specific E2E test
+files that cover functionality changed by the completed tasks. Full E2E suites can take
+30+ minutes — only run the full E2E suite if a task's verification explicitly requires it.
+
+STEP 2 — RUN THE CONSOLIDATED TESTS:
+Run each consolidated test command. Record which tests pass and which fail.
+
+STEP 3 — FIX FAILURES (if any):
+If tests fail:
+  a. Use the task descriptions above to identify which task's changes likely caused each failure
+  b. Fix the issue in the relevant code
+  c. Re-run ONLY the specific failing tests (not the full suite again)
+  d. Repeat up to 3 fix cycles
+  e. A single fix may resolve multiple failures — that's fine
+
+IMPORTANT:
+- You may modify source code to fix test failures
+- Do NOT modify any files in .devloop/ or .claude/ directories
+- If you cannot fix a failure after 3 attempts, report which tests still fail and why
+
+STEP 4 — SUMMARY:
+Report:
+- Which consolidated test commands were run
+- Initial results (pass/fail counts)
+- What fixes were applied and which tasks they related to
+- What retries were performed and their outcomes
+- Any remaining failures`;
+
+  try {
+    const result = await invoke(prompt, config.workspacePath, {
+      verbose: config.verbose,
+      onProgress: (activity) => { updateSpinnerActivity(spinnerState, activity); },
+      onSpawn: (kill) => { killVerificationProcess = kill; },
+      taskTimeout: config.taskTimeout
+    });
+
+    if (spinnerState.interval) clearInterval(spinnerState.interval);
+    spinner.stop();
+    activeSpinner = null;
+    killVerificationProcess = null;
+
+    const duration = formatDuration(Math.round(result.duration / 1000));
+    inVerificationPhase = false;
+    const wasSkipped = stopRequested;
+    stopRequested = false; // Reset so it doesn't affect the rest of the flow
+
+    // User pressed Q during verification — treat as skipped
+    if (wasSkipped) {
+      console.log(chalk.yellow(`  Verification skipped by user (${duration})`));
+
+      // Log the skip to progress.md
+      const skipLog: IterationLog = {
+        iteration: 0,
+        timestamp: new Date().toISOString(),
+        taskAttempted: 'VERIFICATION',
+        taskCompleted: null,
+        summary: 'Consolidated verification skipped by user',
+        duration,
+        exitStatus: 'success',
+        tokenUsage: result.tokenUsage
+      };
+      try {
+        const tasks = await parseTasks(config.tasksPath);
+        await appendIteration(config.progressPath, tasks.tasks.length, skipLog);
+      } catch {}
+
+      return true; // Treat as passed — don't block review or report incomplete
+    }
+
+    // Write verification log
+    await writeTaskLog(config.workspacePath, 'VERIFICATION', 'Consolidated test verification', 0, prompt, result, loggerRef);
+
+    // Log to progress.md
+    const iterationLog: IterationLog = {
+      iteration: 0,
+      timestamp: new Date().toISOString(),
+      taskAttempted: 'VERIFICATION',
+      taskCompleted: null,  // Not a real task — don't count in completed tally
+      summary: result.success
+        ? 'Consolidated verification passed'
+        : `Consolidated verification failed: ${result.error?.split('\n')[0] || 'Tests did not pass'}`,
+      duration,
+      exitStatus: result.success ? 'success' : 'error',
+      tokenUsage: result.tokenUsage
+    };
+
+    try {
+      const tasks = await parseTasks(config.tasksPath);
+      await appendIteration(config.progressPath, tasks.tasks.length, iterationLog);
+    } catch {
+      // Best effort progress logging
+    }
+
+    if (result.success) {
+      console.log(chalk.green(`  Verification passed (${duration})`));
+      if (result.tokenUsage) {
+        console.log(chalk.gray(`    ${result.tokenUsage.totalTokens.toLocaleString()} tokens ($${result.tokenUsage.costUsd.toFixed(4)})`));
+      }
+
+      // Commit any fixes made during verification
+      if (!skipGit) {
+        await commitIteration(config.workspacePath, 0, 'VERIFICATION', 'Verification fixes', true, config.verbose);
+      }
+
+      return true;
+    } else {
+      console.log(chalk.red(`  Verification failed (${duration})`));
+      console.log(chalk.gray(`  Log: ${logPath}`));
+      if (result.output) {
+        // Print the last few lines of output as a summary
+        const lines = result.output.trim().split('\n');
+        const summary = lines.slice(-5).join('\n');
+        console.log(chalk.gray(summary));
+      }
+      return false;
+    }
+  } catch (err) {
+    inVerificationPhase = false;
+    stopRequested = false;
+    killVerificationProcess = null;
+    if (spinnerState.interval) clearInterval(spinnerState.interval);
+    spinner.stop();
+    activeSpinner = null;
+    loggerRef.error('Consolidated verification failed', err);
+    console.log(chalk.yellow('  Verification step failed — skipping.'));
+    return false;
   }
 }
 
@@ -581,18 +795,32 @@ function setupGracefulShutdown(): () => void {
     // or if raw mode was reset by a child process on Windows)
     const trimmed = key.trim().toLowerCase();
     if (trimmed === 'q') {
-      if (!stopRequested) {
-        stopRequested = true;
-        // Use spinner methods to persist the message above the spinner line,
-        // otherwise the spinner's redraw overwrites plain console.log output
+      if (inVerificationPhase) {
+        // During verification, Q is a one-way skip (kills processes, can't undo)
+        if (!stopRequested) {
+          stopRequested = true;
+          if (killVerificationProcess) killVerificationProcess();
+          const message = 'Skipping verification — killing test processes and proceeding to review.';
+          if (activeSpinner && activeSpinner.isSpinning) {
+            activeSpinner.stopAndPersist({ symbol: chalk.yellow('>>'), text: chalk.yellow(message) });
+            activeSpinner.start(activeSpinner.text);
+          } else {
+            console.log(chalk.yellow(`\n>> ${message}`));
+          }
+        }
+      } else {
+        // During tasks, Q toggles stop on/off
+        stopRequested = !stopRequested;
+        const message = stopRequested
+          ? 'Graceful stop requested - will stop after current task/batch completes. Press Q again to cancel.'
+          : 'Stop cancelled - will continue after current task/batch completes.';
+        const symbol = stopRequested ? chalk.yellow('>>') : chalk.green('>>');
+        const color = stopRequested ? chalk.yellow : chalk.green;
         if (activeSpinner && activeSpinner.isSpinning) {
-          activeSpinner.stopAndPersist({
-            symbol: chalk.yellow('>>'),
-            text: chalk.yellow('Graceful stop requested - will stop after current task completes.')
-          });
+          activeSpinner.stopAndPersist({ symbol, text: color(message) });
           activeSpinner.start(activeSpinner.text);
         } else {
-          console.log(chalk.yellow('\n>> Graceful stop requested - will stop after current task completes.'));
+          console.log(color(`\n>> ${message}`));
         }
       }
     } else if (key === '\x03') {
@@ -636,26 +864,6 @@ function ensureStdinListening(): void {
     }
   }
   process.stdin.resume();
-}
-
-/**
- * Write an active task marker to the session file (single task - backward compat wrapper).
- */
-async function setActiveTask(
-  workspacePath: string,
-  activeTask: ActiveTask | null
-): Promise<void> {
-  await setActiveTasks(workspacePath, activeTask ? [activeTask] : []);
-}
-
-/**
- * Read active task marker from session. Returns null if no crash marker.
- */
-async function getActiveTask(
-  workspacePath: string
-): Promise<ActiveTask | null> {
-  const tasks = await getActiveTasks(workspacePath);
-  return tasks.length > 0 ? tasks[0] : null;
 }
 
 /**
@@ -722,10 +930,6 @@ export interface RunLoopOverrides {
   skipGit?: boolean;
   /** Request graceful stop after this many iterations (for testing Q key behavior) */
   stopAfterIterations?: number;
-  /** Override max workers for testing */
-  maxWorkers?: number;
-  /** Skip worktree-based parallel execution (use sequential loop) */
-  skipWorktrees?: boolean;
 }
 
 export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverrides): Promise<void> {
@@ -756,9 +960,9 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
 
   printBanner('Starting');
   if (rawModeActive) {
-    console.log(chalk.yellow('Tip: Press Q to stop after the current task completes.'));
+    console.log(chalk.yellow('Tip: Press Q to stop after the current task completes (press again to cancel).'));
   } else {
-    console.log(chalk.yellow('Tip: Type q + Enter to stop after the current task completes.'));
+    console.log(chalk.yellow('Tip: Type q + Enter to stop after the current task completes (again to cancel).'));
   }
   console.log(chalk.gray(`Workspace: ${config.workspacePath}`));
   console.log(chalk.gray(`Requirements: ${config.requirementsPath}`));
@@ -771,8 +975,13 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
   if (config.costLimit) {
     console.log(chalk.gray(`Cost limit: $${config.costLimit.toFixed(2)} (per session)`));
   }
-  const maxWorkers = overrides?.maxWorkers ?? config.maxWorkers ?? 5;
-  console.log(chalk.gray(`Max workers: ${maxWorkers}`));
+  if (config.taskTimeout) {
+    console.log(chalk.gray(`Task timeout: ${formatDuration(config.taskTimeout / 1000)}`));
+  }
+  console.log(chalk.gray(`Verification: ${config.verifyEachTask ? 'per-task' : 'consolidated (tests run after all tasks)'}`));
+  if (config.maxParallelTasks && config.maxParallelTasks > 1) {
+    console.log(chalk.gray(`Parallel tasks: up to ${config.maxParallelTasks} per batch`));
+  }
   console.log(chalk.green(`Workspace restriction: ENABLED (--add-dir)`));
 
   if (config.dryRun) {
@@ -797,16 +1006,6 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
       console.log(chalk.yellow('Git: Not available - changes will not be versioned'));
     }
 
-    // Configure git for parallel worktree execution
-    if (gitSetup.gitAvailable && maxWorkers > 1) {
-      await configureForParallel(config.workspacePath);
-      // Clean up stale worktrees from previous crashed runs
-      const cleaned = await cleanupStaleWorktrees(config.workspacePath);
-      if (cleaned > 0) {
-        console.log(chalk.gray(`Git: Cleaned up ${cleaned} stale worktree branch(es)`));
-      }
-    }
-
     // Check for uncommitted changes (potential interrupted work)
     // Ignore .devloop/ changes as these are session files updated at run start
     if (gitSetup.gitAvailable) {
@@ -828,7 +1027,9 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
 
   // Create/update session AFTER uncommitted changes check to avoid false positives
   if (config.sessionAction === 'create') {
-    await createSession(config.workspacePath, 'run');
+    // Preserve the iteration number from the existing session (set during archive flow)
+    const existingSession = await readSession(config.workspacePath);
+    await createSession(config.workspacePath, 'run', existingSession?.iteration);
   } else if (config.sessionAction === 'update') {
     await updateSessionPhase(config.workspacePath, 'run');
   }
@@ -903,19 +1104,6 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
     }
   }
 
-  // Determine if we can use parallel execution (requires git)
-  const useParallel = gitSetup.gitAvailable && maxWorkers > 1 && !overrides?.skipWorktrees;
-
-  if (useParallel) {
-    console.log(chalk.green(`Parallel execution: ENABLED (up to ${maxWorkers} workers)`));
-  }
-
-  // --- Parallel Worker Pool ---
-  const fileMutex = new AsyncMutex();
-  const mergeMutex = new AsyncMutex();
-  const activeWorkers = new Map<string, WorkerState>();
-  const mergeFailureCounts = new Map<string, number>();
-  const priorDiffs = new Map<string, string>();
   let iterationCounter = startIteration;
   let apiErrorDetected = false;
   let hookFailureDetected = false;
@@ -953,7 +1141,7 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
     const doneTasks = taskList.tasks.filter(t => t.status === 'done');
     const totalTasks = taskList.tasks.length;
 
-    if (doneTasks.length === totalTasks && activeWorkers.size === 0) {
+    if (doneTasks.length === totalTasks) {
       setTerminalTitle(`DevLoop: All ${doneTasks.length} tasks complete!`);
       console.log(chalk.green.bold('\n✓ All tasks completed!'));
       allTasksComplete = true;
@@ -978,360 +1166,225 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
       hasInterruptedWork = false;
     }
 
-    // Find available tasks (not active, deps met)
-    const activeIds = new Set(activeWorkers.keys());
-    const available = getAvailableTasks(taskList, activeIds);
+    // Find available tasks
+    const availableTasks = getAvailableTasks(taskList, new Set());
+    const maxParallel = config.maxParallelTasks ?? 5;
 
-    // How many new workers can we start?
-    const effectiveMaxWorkers = useParallel ? maxWorkers : 1;
-    const slotsAvailable = effectiveMaxWorkers - activeWorkers.size;
-    const tasksToStart = available.slice(0, Math.max(0, slotsAvailable));
-
-    // If no active workers and no available tasks, we're done or deadlocked
-    if (activeWorkers.size === 0 && tasksToStart.length === 0) {
+    if (availableTasks.length === 0) {
       const pendingTasks = taskList.tasks.filter(t => t.status === 'pending');
       if (pendingTasks.length > 0) {
         console.log(chalk.yellow('\nNo available tasks (all remaining tasks have unmet dependencies)'));
         console.log(chalk.gray('Blocked tasks:'));
-        for (const task of pendingTasks) {
-          console.log(chalk.gray(`  - ${task.id}: depends on ${task.dependencies.join(', ')}`));
+        for (const t of pendingTasks) {
+          console.log(chalk.gray(`  - ${t.id}: depends on ${t.dependencies.join(', ')}`));
         }
       }
       break;
     }
 
-    // Start new workers
-    for (const task of tasksToStart) {
-      if (iterationCounter > endIteration) break;
-      if (config.dryRun) {
-        console.log(chalk.yellow(`  [DRY RUN] Would execute ${task.id}: ${task.title}`));
-        iterationCounter++;
-        continue;
+    if (config.dryRun) {
+      for (const t of availableTasks.slice(0, maxParallel)) {
+        console.log(chalk.yellow(`  [DRY RUN] Would execute ${t.id}: ${t.title}`));
       }
+      iterationCounter++;
+      continue;
+    }
 
-      const isRetry = task.status === 'in-progress';
-      const priorDiff = priorDiffs.get(task.id);
-      const mergeFailCount = mergeFailureCounts.get(task.id) || 0;
+    // Decide: batch execution (2+ tasks, parallel enabled) or single-task
+    const useBatch = availableTasks.length >= 2 && maxParallel >= 2;
+    const batch = useBatch ? availableTasks.slice(0, maxParallel) : null;
+    const task = useBatch ? null : availableTasks[0];
+
+    if (batch) {
+      // === BATCH EXECUTION PATH ===
       const taskIteration = iterationCounter;
       iterationCounter++;
+      const batchIds = batch.map(t => t.id);
+      const batchLabel = batchIds.join(', ');
 
-      // Mark task as in-progress (mutex-protected)
-      const release = await fileMutex.acquire();
-      try {
-        await updateTaskStatus(config.tasksPath, task.id, 'in-progress');
-      } finally {
-        release();
+      // Mark all batch tasks as in-progress
+      for (const t of batch) {
+        await updateTaskStatus(config.tasksPath, t.id, 'in-progress');
       }
 
-      logger.info(`Starting worker for ${task.id} - ${task.title} (iteration ${taskIteration})`);
-      console.log(chalk.cyan(`\n  Starting ${task.id}: ${task.title} (${doneTasks.length}/${totalTasks} done)${priorDiff ? ' (re-applying prior changes)' : ''}`));
+      logger.info(`Starting batch: ${batchLabel} (iteration ${taskIteration})`);
+      console.log(chalk.cyan(`\n  Batch: ${batch.length} tasks in parallel (${doneTasks.length}/${totalTasks} done)`));
+      for (const t of batch) {
+        console.log(chalk.cyan(`    ${t.id}: ${t.title}`));
+        console.log(chalk.gray(`      Description: ${t.description}`));
+        console.log(chalk.gray(`      Verification: ${t.verification}`));
+      }
+      if (rawModeActive) {
+        console.log(chalk.yellow(`    Press Q to stop after this batch completes.`));
+      }
 
-      // Create the worker promise
-      const workerPromise = (async (): Promise<WorkerResult> => {
-        const taskStartTime = Date.now();
-        let worktree: WorktreeInfo | undefined;
-        const toolEvents: ToolEvent[] = [];
-
-        try {
-          // Create worktree if parallel, otherwise work in main workspace
-          const useWorktreeForTask = useParallel && mergeFailCount < 2;
-          let workDir: string;
-
-          if (useWorktreeForTask) {
-            worktree = await createWorktree(config.workspacePath, task.id);
-            await prepareWorktree(worktree, config.workspacePath);
-            workDir = worktree.worktreePath;
-          } else {
-            // Sequential fallback (no git, or merge failed too many times)
-            workDir = config.workspacePath;
-          }
-
-          // Build prompt with context
-          const promptOpts = {
-            isRetry,
-            priorDiff: priorDiff || undefined,
-            isParallel: useParallel && activeWorkers.size > 0
-          };
-          const prompt = buildTaskPrompt(
-            task, config.requirementsPath, config.tasksPath, config.progressPath,
-            workDir, promptOpts
-          );
-
-          // Invoke Claude with tool event tracking
-          const result = await invoke(prompt, workDir, {
-            verbose: config.verbose,
-            onToolCall: (event) => { toolEvents.push(event); }
-          });
-
-          // Re-enable raw mode after child process
-          if (!overrides?.skipStdin) ensureStdinListening();
-
-          return {
-            taskId: task.id,
-            taskTitle: task.title,
-            claudeResult: result,
-            worktree: worktree || { worktreePath: config.workspacePath, branchName: '', taskId: task.id },
-            priorDiff,
-            mergeFailureCount: mergeFailCount,
-            toolEvents,
-            verification: task.verification
-          };
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          return {
-            taskId: task.id,
-            taskTitle: task.title,
-            claudeResult: {
-              success: false,
-              output: '',
-              rawOutput: '',
-              error: errorMessage,
-              errorType: 'unknown' as ClaudeErrorType,
-              duration: Date.now() - taskStartTime
-            },
-            worktree: worktree || { worktreePath: config.workspacePath, branchName: '', taskId: task.id },
-            priorDiff,
-            mergeFailureCount: mergeFailCount,
-            toolEvents,
-            verification: task.verification
-          };
-        }
-      })();
-
-      activeWorkers.set(task.id, {
-        task,
-        worktree: { worktreePath: '', branchName: `devloop/${task.id}`, taskId: task.id },
-        promise: workerPromise,
-        startTime: Date.now()
-      });
-
-      // Update crash markers
-      const activeTasksList: ActiveTask[] = [...activeWorkers.values()].map(w => ({
-        taskId: w.task.id,
-        taskTitle: w.task.title,
+      // Set crash marker with first task in batch
+      await setActiveTask(config.workspacePath, {
+        taskId: batchIds[0],
+        taskTitle: `Batch: ${batchLabel}`,
         iterationNumber: taskIteration,
         startedAt: new Date().toISOString()
-      }));
-      await setActiveTasks(config.workspacePath, activeTasksList);
+      });
 
-      // Update terminal title
-      setTerminalTitle(
-        `DevLoop: ${activeWorkers.size} active | ${doneTasks.length}/${totalTasks} done`
+      // Build batch prompt and invoke
+      const batchStartTime = Date.now();
+      const batchPrompt = buildBatchPrompt(
+        batch, config.requirementsPath, config.tasksPath, config.progressPath,
+        config.workspacePath, config.verifyEachTask ?? false
       );
-    }
 
-    // If no active workers (e.g., dry run only), continue
-    if (activeWorkers.size === 0) continue;
+      const termTitle = `DevLoop: Batch (${batch.length} tasks) | ${doneTasks.length}/${totalTasks} done`;
+      const spinnerState = startTimedSpinner(
+        spinner,
+        `  Batch: ${batch.length} tasks (${doneTasks.length}/${totalTasks} done)`,
+        batchStartTime,
+        config.verbose,
+        termTitle
+      );
+      activeSpinner = spinner;
 
-    // Show spinner for active workers
-    const activeNames = [...activeWorkers.keys()].join(', ');
-    spinner.start(chalk.cyan(`  Working: ${activeNames} (${activeWorkers.size} active, ${doneTasks.length}/${totalTasks} done)`));
-    activeSpinner = spinner;
-
-    // Wait for any worker to complete
-    const completed = await Promise.race(
-      [...activeWorkers.entries()].map(([taskId, worker]) =>
-        worker.promise.then(result => ({ taskId, result }))
-      )
-    );
-
-    spinner.stop();
-    activeSpinner = null;
-
-    // Capture worker start time before removing
-    const workerStartTime = activeWorkers.get(completed.taskId)?.startTime ?? Date.now();
-
-    // Remove completed worker
-    activeWorkers.delete(completed.taskId);
-
-    // Simulate graceful stop for testing
-    if (overrides?.stopAfterIterations !== undefined) {
-      const iterationsCompleted = iterationTimings.length + 1;
-      if (iterationsCompleted >= overrides.stopAfterIterations) {
-        stopRequested = true;
-      }
-    }
-
-    const result = completed.result;
-    const claudeResult = result.claudeResult;
-    const duration = formatDuration(Math.round(claudeResult.duration / 1000));
-
-    logger.info(`Worker ${result.taskId} finished: success=${claudeResult.success}, duration=${claudeResult.duration}ms`);
-
-    // Update token tracking
-    if (claudeResult.tokenUsage) {
-      sessionTokens.input += claudeResult.tokenUsage.inputTokens;
-      sessionTokens.output += claudeResult.tokenUsage.outputTokens;
-      sessionTokens.cacheWrite += claudeResult.tokenUsage.cacheCreationTokens;
-      sessionTokens.cacheRead += claudeResult.tokenUsage.cacheReadTokens;
-      sessionTokens.total += claudeResult.tokenUsage.totalTokens;
-      sessionCost += claudeResult.tokenUsage.costUsd;
-
-      projectTokens.input += claudeResult.tokenUsage.inputTokens;
-      projectTokens.output += claudeResult.tokenUsage.outputTokens;
-      projectTokens.cacheWrite += claudeResult.tokenUsage.cacheCreationTokens;
-      projectTokens.cacheRead += claudeResult.tokenUsage.cacheReadTokens;
-      projectTokens.total += claudeResult.tokenUsage.totalTokens;
-      projectCost += claudeResult.tokenUsage.costUsd;
-    }
-
-    // Collect timing data
-    iterationTimings.push({
-      iteration: iterationCounter - 1,
-      taskId: result.taskId,
-      taskTitle: result.taskTitle,
-      durationMs: claudeResult.duration,
-      success: claudeResult.success,
-      errorType: claudeResult.success ? undefined : claudeResult.errorType
-    });
-
-    // Record in progress.md (mutex-protected)
-    // Estimate work vs verification timing
-    const workerEndTime = workerStartTime + claudeResult.duration;
-    const timingSplitForLog = result.verification
-      ? estimateWorkVerificationSplit(result.toolEvents, result.verification, workerStartTime, workerEndTime)
-      : null;
-
-    const iterationLog: IterationLog = {
-      iteration: iterationCounter - 1,
-      timestamp: new Date().toISOString(),
-      taskAttempted: result.taskId,
-      taskCompleted: claudeResult.success ? result.taskId : null,
-      summary: claudeResult.success
-        ? `Completed ${result.taskTitle}`
-        : `Failed: ${claudeResult.error?.split('\n')[0] || 'Unknown error'}`,
-      duration,
-      exitStatus: claudeResult.success ? 'success' : 'error',
-      errorType: claudeResult.success ? undefined : claudeResult.errorType,
-      errorDetail: claudeResult.success ? undefined : claudeResult.error,
-      tokenUsage: claudeResult.tokenUsage,
-      workDuration: timingSplitForLog ? formatDuration(Math.round(timingSplitForLog.workMs / 1000)) : undefined,
-      verificationDuration: timingSplitForLog ? formatDuration(Math.round(timingSplitForLog.verifyMs / 1000)) : undefined
-    };
-
-    {
-      const release = await fileMutex.acquire();
+      const batchToolEvents: ToolEvent[] = [];
+      let claudeResult;
       try {
-        const currentTasks = await parseTasks(config.tasksPath);
-        await appendIteration(config.progressPath, currentTasks.tasks.length, iterationLog);
-      } finally {
-        release();
+        claudeResult = await invoke(batchPrompt, config.workspacePath, {
+          verbose: config.verbose,
+          onProgress: (activity) => { updateSpinnerActivity(spinnerState, activity); },
+          onToolCall: (event) => { batchToolEvents.push(event); },
+          taskTimeout: config.taskTimeout
+        });
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        claudeResult = {
+          success: false,
+          output: '',
+          rawOutput: '',
+          error: errorMessage,
+          errorType: 'unknown' as ClaudeErrorType,
+          duration: Date.now() - batchStartTime
+        };
       }
-    }
 
-    // Write task log
-    const prompt = buildTaskPrompt(
-      { id: result.taskId, title: result.taskTitle, description: '', verification: '', status: 'in-progress', dependencies: [] },
-      config.requirementsPath, config.tasksPath, config.progressPath,
-      result.worktree.worktreePath, { priorDiff: result.priorDiff }
-    );
-    await writeTaskLog(config.workspacePath, result.taskId, result.taskTitle, iterationCounter - 1, prompt, claudeResult, logger);
+      if (spinnerState.interval) clearInterval(spinnerState.interval);
+      spinner.stop();
+      activeSpinner = null;
 
-    if (claudeResult.success) {
-      const tokenInfo = claudeResult.tokenUsage
-        ? ` [${claudeResult.tokenUsage.totalTokens.toLocaleString()} tokens]`
-        : '';
+      if (!overrides?.skipStdin) ensureStdinListening();
 
-      // Try to merge if using worktrees
-      if (useParallel && result.worktree.branchName) {
-        const mergeRelease = await mergeMutex.acquire();
-        try {
-          // Get the task's verification command for post-merge verification
-          const currentTasks = await parseTasks(config.tasksPath);
-          const taskDef = currentTasks.tasks.find(t => t.id === result.taskId);
-          const verification = taskDef?.verification;
-
-          const mergeResult = await mergeWorktree(
-            config.workspacePath, result.worktree, result.taskTitle,
-            verification, config.verbose
-          );
-
-          if (mergeResult.success) {
-            // Mark task done (mutex-protected)
-            const release = await fileMutex.acquire();
-            let doneCount = 0;
-            try {
-              await updateTaskStatus(config.tasksPath, result.taskId, 'done');
-              const updated = await parseTasks(config.tasksPath);
-              doneCount = updated.tasks.filter(t => t.status === 'done').length;
-            } finally {
-              release();
-            }
-
-            spinner.succeed(chalk.green(`  Merged ${result.taskId} (${duration})${tokenInfo} (${doneCount}/${totalTasks} done)`));
-
-            // Clean up
-            priorDiffs.delete(result.taskId);
-            mergeFailureCounts.delete(result.taskId);
-
-            // Show token info and task stats
-            if (claudeResult.tokenUsage) {
-              const t = claudeResult.tokenUsage;
-              console.log(chalk.gray(`    ${t.totalTokens.toLocaleString()} tokens ($${t.costUsd.toFixed(4)}) | Session: $${sessionCost.toFixed(4)}`));
-            }
-            const workerEndTime = workerStartTime + claudeResult.duration;
-            const timingSplit = displayTaskStats(
-              result.toolEvents, result.verification,
-              workerStartTime, workerEndTime
-            );
-          } else {
-            // Merge failed — save diff and re-queue
-            const failCount = (mergeFailureCounts.get(result.taskId) || 0) + 1;
-            mergeFailureCounts.set(result.taskId, failCount);
-
-            const diff = await getWorktreeDiff(config.workspacePath, result.worktree.branchName);
-            if (diff) {
-              priorDiffs.set(result.taskId, diff);
-            }
-
-            const reason = mergeResult.verificationFailed ? 'post-merge verification failed' : 'merge conflict';
-            if (failCount >= 2) {
-              spinner.fail(chalk.yellow(`  ${result.taskId}: ${reason} (will retry sequentially)`));
-            } else {
-              spinner.fail(chalk.yellow(`  ${result.taskId}: ${reason} — will re-apply changes (attempt ${failCount}/2)`));
-            }
-
-            // Revert task to pending for re-queue (unless it'll be sequential fallback)
-            const release = await fileMutex.acquire();
-            try {
-              await updateTaskStatus(config.tasksPath, result.taskId, 'pending');
-            } finally {
-              release();
-            }
-          }
-        } finally {
-          mergeRelease();
+      // Simulate graceful stop for testing
+      if (overrides?.stopAfterIterations !== undefined) {
+        const iterationsCompleted = iterationTimings.length + 1;
+        if (iterationsCompleted >= overrides.stopAfterIterations) {
+          stopRequested = true;
         }
+      }
 
-        // Clean up worktree
-        await cleanupWorktree(result.worktree, config.workspacePath);
+      const duration = formatDuration(Math.round(claudeResult.duration / 1000));
 
+      // Update token tracking
+      if (claudeResult.tokenUsage) {
+        sessionTokens.input += claudeResult.tokenUsage.inputTokens;
+        sessionTokens.output += claudeResult.tokenUsage.outputTokens;
+        sessionTokens.cacheWrite += claudeResult.tokenUsage.cacheCreationTokens;
+        sessionTokens.cacheRead += claudeResult.tokenUsage.cacheReadTokens;
+        sessionTokens.total += claudeResult.tokenUsage.totalTokens;
+        sessionCost += claudeResult.tokenUsage.costUsd;
+
+        projectTokens.input += claudeResult.tokenUsage.inputTokens;
+        projectTokens.output += claudeResult.tokenUsage.outputTokens;
+        projectTokens.cacheWrite += claudeResult.tokenUsage.cacheCreationTokens;
+        projectTokens.cacheRead += claudeResult.tokenUsage.cacheReadTokens;
+        projectTokens.total += claudeResult.tokenUsage.totalTokens;
+        projectCost += claudeResult.tokenUsage.costUsd;
+      }
+
+      // Check for API error on the entire batch invocation
+      if (!claudeResult.success && isApiError(claudeResult.errorType)) {
+        logger.error(`API error during batch: ${claudeResult.errorType}`);
+        spinner.fail(chalk.red(`  Batch failed - ${claudeResult.error?.split('\n')[0] || 'Unknown error'}`));
+        console.log(chalk.red.bold('\n⚠ API Error Detected - Stopping DevLoop'));
+        console.log(chalk.red(`  Error Type: ${claudeResult.errorType}`));
+        apiErrorDetected = true;
+
+        // Log batch failure
+        iterationTimings.push({
+          iteration: taskIteration,
+          taskId: batchIds[0],
+          taskTitle: `Batch: ${batchLabel}`,
+          durationMs: claudeResult.duration,
+          success: false,
+          errorType: claudeResult.errorType
+        });
       } else {
-        // Sequential mode (no worktree) — commit directly on main
-        const release = await fileMutex.acquire();
-        let doneCount = 0;
-        try {
-          await updateTaskStatus(config.tasksPath, result.taskId, 'done');
-          const updated = await parseTasks(config.tasksPath);
-          doneCount = updated.tasks.filter(t => t.status === 'done').length;
-        } finally {
-          release();
+        // Parse per-task results from Claude's output
+        const batchResults = parseBatchResults(claudeResult.output || '', batchIds);
+        const succeededIds: string[] = [];
+        const failedIds: string[] = [];
+
+        for (const t of batch) {
+          const result = batchResults.get(t.id);
+          if (result?.success) {
+            await updateTaskStatus(config.tasksPath, t.id, 'done');
+            succeededIds.push(t.id);
+            console.log(chalk.green(`  ✓ ${t.id}: ${t.title}`));
+          } else {
+            // Leave in-progress for retry
+            failedIds.push(t.id);
+            console.log(chalk.red(`  ✗ ${t.id}: ${result?.error || 'No result reported'}`));
+          }
         }
 
-        spinner.succeed(chalk.green(`  Completed ${result.taskId} (${duration})${tokenInfo} (${doneCount}/${totalTasks} done)`));
+        const updated = await parseTasks(config.tasksPath);
+        const doneCount = updated.tasks.filter(t => t.status === 'done').length;
+        const tokenInfo = claudeResult.tokenUsage
+          ? ` [${claudeResult.tokenUsage.totalTokens.toLocaleString()} tokens]`
+          : '';
+        console.log(chalk.cyan(`  Batch: ${succeededIds.length}/${batch.length} succeeded (${duration})${tokenInfo} (${doneCount}/${totalTasks} done)`));
 
-        // Show token info and task stats
         if (claudeResult.tokenUsage) {
           const t = claudeResult.tokenUsage;
           console.log(chalk.gray(`    ${t.totalTokens.toLocaleString()} tokens ($${t.costUsd.toFixed(4)}) | Session: $${sessionCost.toFixed(4)}`));
         }
-        const workerEndTime = workerStartTime + claudeResult.duration;
-        displayTaskStats(result.toolEvents, result.verification, workerStartTime, workerEndTime);
+        displayTaskStats(batchToolEvents, undefined, batchStartTime, batchStartTime + claudeResult.duration);
 
-        if (!overrides?.skipGit) {
+        // Collect timing data (one entry per batch)
+        iterationTimings.push({
+          iteration: taskIteration,
+          taskId: batchIds[0],
+          taskTitle: `Batch: ${batchLabel} (${succeededIds.length}/${batch.length})`,
+          durationMs: claudeResult.duration,
+          success: succeededIds.length > 0,
+          errorType: succeededIds.length === 0 ? 'task_failure' : undefined
+        });
+
+        // Log to progress.md
+        const iterationLog: IterationLog = {
+          iteration: taskIteration,
+          timestamp: new Date().toISOString(),
+          taskAttempted: batchLabel,
+          taskCompleted: succeededIds.length > 0 ? succeededIds.join(', ') : null,
+          summary: `Batch: ${succeededIds.length}/${batch.length} succeeded`,
+          duration,
+          exitStatus: succeededIds.length > 0 ? 'success' : 'error',
+          tokenUsage: claudeResult.tokenUsage
+        };
+
+        try {
+          await appendIteration(config.progressPath, totalTasks, iterationLog);
+        } catch {
+          // Best effort
+        }
+
+        // Write batch log
+        await writeTaskLog(config.workspacePath, `BATCH-${taskIteration}`, `Batch: ${batchLabel}`, taskIteration, batchPrompt, claudeResult, logger);
+
+        // Commit all batch changes at once
+        if (!overrides?.skipGit && succeededIds.length > 0) {
+          const commitAction = succeededIds.length === batch.length
+            ? `Complete batch: ${batchLabel}`
+            : `Partial batch: ${succeededIds.join(', ')} succeeded`;
           const commitResult = await commitIteration(
-            config.workspacePath, iterationCounter - 1,
-            result.taskId, result.taskTitle, true, config.verbose
+            config.workspacePath, taskIteration,
+            batchIds[0], commitAction, true, config.verbose
           );
           if (commitResult.hookFailure) {
             hookFailureDetected = true;
@@ -1339,79 +1392,222 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
           }
         }
 
-        priorDiffs.delete(result.taskId);
-        mergeFailureCounts.delete(result.taskId);
+        if (failedIds.length > 0 && succeededIds.length === 0) {
+          console.log(chalk.yellow('  All tasks in batch failed. Will retry on next cycle...'));
+        }
       }
-    } else {
-      // Task failed
-      spinner.fail(chalk.red(`  Failed ${result.taskId} - ${claudeResult.error?.split('\n')[0] || 'Unknown error'}`));
 
-      // Check for API error
-      if (isApiError(claudeResult.errorType)) {
-        logger.error(`API error detected: ${claudeResult.errorType}`);
-        console.log(chalk.red.bold('\n⚠ API Error Detected - Stopping DevLoop'));
-        console.log(chalk.red(`  Error Type: ${claudeResult.errorType}`));
-        apiErrorDetected = true;
+      // Clear crash marker and update session
+      await setActiveTask(config.workspacePath, null);
+      await updateSessionIteration(config.workspacePath, taskIteration);
+
+    } else if (task) {
+      // === SINGLE TASK EXECUTION PATH (existing behavior) ===
+      const isRetry = task.status === 'in-progress';
+      const taskIteration = iterationCounter;
+      iterationCounter++;
+
+      // Mark task as in-progress
+      await updateTaskStatus(config.tasksPath, task.id, 'in-progress');
+
+      logger.info(`Starting ${task.id} - ${task.title} (iteration ${taskIteration})`);
+      console.log(chalk.cyan(`\n  Starting ${task.id}: ${task.title} (${doneTasks.length}/${totalTasks} done)`));
+      console.log(chalk.gray(`    Description: ${task.description}`));
+      console.log(chalk.gray(`    Verification: ${task.verification}`));
+      if (rawModeActive) {
+        console.log(chalk.yellow(`    Press Q to stop after this task completes.`));
+      }
+
+      // Set crash marker
+      await setActiveTask(config.workspacePath, {
+        taskId: task.id,
+        taskTitle: task.title,
+        iterationNumber: taskIteration,
+        startedAt: new Date().toISOString()
+      });
+
+      // Build prompt and invoke Claude
+      const taskStartTime = Date.now();
+      const toolEvents: ToolEvent[] = [];
+
+      const prompt = buildTaskPrompt(
+        task, config.requirementsPath, config.tasksPath, config.progressPath,
+        config.workspacePath, isRetry, config.verifyEachTask ?? false
+      );
+
+      // Show spinner with elapsed time
+      const termTitle = `DevLoop: ${task.id} | ${doneTasks.length}/${totalTasks} done`;
+      const spinnerState = startTimedSpinner(
+        spinner,
+        `  Working: ${task.id} (${doneTasks.length}/${totalTasks} done)`,
+        taskStartTime,
+        config.verbose,
+        termTitle
+      );
+      activeSpinner = spinner;
+
+      let claudeResult;
+      try {
+        claudeResult = await invoke(prompt, config.workspacePath, {
+          verbose: config.verbose,
+          onProgress: (activity) => { updateSpinnerActivity(spinnerState, activity); },
+          onToolCall: (event) => { toolEvents.push(event); },
+          taskTimeout: config.taskTimeout
+        });
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        claudeResult = {
+          success: false,
+          output: '',
+          rawOutput: '',
+          error: errorMessage,
+          errorType: 'unknown' as ClaudeErrorType,
+          duration: Date.now() - taskStartTime
+        };
+      }
+
+      if (spinnerState.interval) clearInterval(spinnerState.interval);
+      spinner.stop();
+      activeSpinner = null;
+
+      // Re-enable raw mode after child process
+      if (!overrides?.skipStdin) ensureStdinListening();
+
+      // Simulate graceful stop for testing
+      if (overrides?.stopAfterIterations !== undefined) {
+        const iterationsCompleted = iterationTimings.length + 1;
+        if (iterationsCompleted >= overrides.stopAfterIterations) {
+          stopRequested = true;
+        }
+      }
+
+      const duration = formatDuration(Math.round(claudeResult.duration / 1000));
+
+      logger.info(`${task.id} finished: success=${claudeResult.success}, duration=${claudeResult.duration}ms`);
+
+      // Update token tracking
+      if (claudeResult.tokenUsage) {
+        sessionTokens.input += claudeResult.tokenUsage.inputTokens;
+        sessionTokens.output += claudeResult.tokenUsage.outputTokens;
+        sessionTokens.cacheWrite += claudeResult.tokenUsage.cacheCreationTokens;
+        sessionTokens.cacheRead += claudeResult.tokenUsage.cacheReadTokens;
+        sessionTokens.total += claudeResult.tokenUsage.totalTokens;
+        sessionCost += claudeResult.tokenUsage.costUsd;
+
+        projectTokens.input += claudeResult.tokenUsage.inputTokens;
+        projectTokens.output += claudeResult.tokenUsage.outputTokens;
+        projectTokens.cacheWrite += claudeResult.tokenUsage.cacheCreationTokens;
+        projectTokens.cacheRead += claudeResult.tokenUsage.cacheReadTokens;
+        projectTokens.total += claudeResult.tokenUsage.totalTokens;
+        projectCost += claudeResult.tokenUsage.costUsd;
+      }
+
+      // Collect timing data
+      iterationTimings.push({
+        iteration: taskIteration,
+        taskId: task.id,
+        taskTitle: task.title,
+        durationMs: claudeResult.duration,
+        success: claudeResult.success,
+        errorType: claudeResult.success ? undefined : claudeResult.errorType
+      });
+
+      // Record in progress.md
+      const taskEndTime = taskStartTime + claudeResult.duration;
+      const timingSplitForLog = (task.verification && config.verifyEachTask)
+        ? estimateWorkVerificationSplit(toolEvents, task.verification, taskStartTime, taskEndTime)
+        : null;
+
+      const iterationLog: IterationLog = {
+        iteration: taskIteration,
+        timestamp: new Date().toISOString(),
+        taskAttempted: task.id,
+        taskCompleted: claudeResult.success ? task.id : null,
+        summary: claudeResult.success
+          ? `Completed ${task.title}`
+          : `Failed: ${claudeResult.error?.split('\n')[0] || 'Unknown error'}`,
+        duration,
+        exitStatus: claudeResult.success ? 'success' : 'error',
+        errorType: claudeResult.success ? undefined : claudeResult.errorType,
+        errorDetail: claudeResult.success ? undefined : claudeResult.error,
+        tokenUsage: claudeResult.tokenUsage,
+        workDuration: timingSplitForLog ? formatDuration(Math.round(timingSplitForLog.workMs / 1000)) : undefined,
+        verificationDuration: timingSplitForLog ? formatDuration(Math.round(timingSplitForLog.verifyMs / 1000)) : undefined
+      };
+
+      {
+        const currentTasks = await parseTasks(config.tasksPath);
+        await appendIteration(config.progressPath, currentTasks.tasks.length, iterationLog);
+      }
+
+      // Write task log
+      const logPrompt = buildTaskPrompt(
+        { id: task.id, title: task.title, description: '', verification: '', status: 'in-progress', dependencies: [] },
+        config.requirementsPath, config.tasksPath, config.progressPath,
+        config.workspacePath, false
+      );
+      await writeTaskLog(config.workspacePath, task.id, task.title, taskIteration, logPrompt, claudeResult, logger);
+
+      if (claudeResult.success) {
+        const tokenInfo = claudeResult.tokenUsage
+          ? ` [${claudeResult.tokenUsage.totalTokens.toLocaleString()} tokens]`
+          : '';
+
+        // Mark task done and commit
+        await updateTaskStatus(config.tasksPath, task.id, 'done');
+        const updated = await parseTasks(config.tasksPath);
+        const doneCount = updated.tasks.filter(t => t.status === 'done').length;
+
+        spinner.succeed(chalk.green(`  Completed ${task.id} (${duration})${tokenInfo} (${doneCount}/${totalTasks} done)`));
+
+        // Show token info and task stats
+        if (claudeResult.tokenUsage) {
+          const t = claudeResult.tokenUsage;
+          console.log(chalk.gray(`    ${t.totalTokens.toLocaleString()} tokens ($${t.costUsd.toFixed(4)}) | Session: $${sessionCost.toFixed(4)}`));
+        }
+        displayTaskStats(toolEvents, config.verifyEachTask ? task.verification : undefined, taskStartTime, taskEndTime);
+
+        if (!overrides?.skipGit) {
+          const commitResult = await commitIteration(
+            config.workspacePath, taskIteration,
+            task.id, task.title, true, config.verbose
+          );
+          if (commitResult.hookFailure) {
+            hookFailureDetected = true;
+            console.log(chalk.yellow('\nStopping DevLoop due to commit hook failure.'));
+          }
+        }
       } else {
-        console.log(chalk.yellow('  Will retry on next cycle...'));
+        // Task failed
+        spinner.fail(chalk.red(`  Failed ${task.id} - ${claudeResult.error?.split('\n')[0] || 'Unknown error'}`));
+
+        // Check for API error
+        if (isApiError(claudeResult.errorType)) {
+          logger.error(`API error detected: ${claudeResult.errorType}`);
+          console.log(chalk.red.bold('\n⚠ API Error Detected - Stopping DevLoop'));
+          console.log(chalk.red(`  Error Type: ${claudeResult.errorType}`));
+          apiErrorDetected = true;
+        } else {
+          console.log(chalk.yellow('  Will retry on next cycle...'));
+        }
       }
 
-      // Clean up worktree on failure
-      if (useParallel && result.worktree.branchName) {
-        await cleanupWorktree(result.worktree, config.workspacePath);
-      }
+      // Clear crash marker
+      await setActiveTask(config.workspacePath, null);
+
+      // Update session
+      await updateSessionIteration(config.workspacePath, taskIteration);
     }
-
-    // Update crash markers
-    const remainingTasks: ActiveTask[] = [...activeWorkers.values()].map(w => ({
-      taskId: w.task.id,
-      taskTitle: w.task.title,
-      iterationNumber: iterationCounter,
-      startedAt: new Date().toISOString()
-    }));
-    await setActiveTasks(config.workspacePath, remainingTasks);
-
-    // Update session
-    await updateSessionIteration(config.workspacePath, iterationCounter - 1);
 
     // Check graceful stop
     if (stopRequested) {
       console.log(chalk.yellow('\nStopping as requested.'));
-      // Wait for remaining workers
-      if (activeWorkers.size > 0) {
-        const remaining = await Promise.allSettled(
-          [...activeWorkers.values()].map(w => w.promise)
-        );
-        // Process remaining results (simplified — just mark and clean up)
-        for (const settled of remaining) {
-          if (settled.status === 'fulfilled') {
-            const r = settled.value;
-            if (r.claudeResult.success && useParallel && r.worktree.branchName) {
-              const mergeRelease = await mergeMutex.acquire();
-              try {
-                const mr = await mergeWorktree(config.workspacePath, r.worktree, r.taskTitle, undefined, config.verbose);
-                if (mr.success) {
-                  const release = await fileMutex.acquire();
-                  try { await updateTaskStatus(config.tasksPath, r.taskId, 'done'); } finally { release(); }
-                  spinner.succeed(chalk.green(`  Merged ${r.taskId} (completed during shutdown)`));
-                }
-              } finally {
-                mergeRelease();
-              }
-              await cleanupWorktree(r.worktree, config.workspacePath);
-            }
-            // Update tokens
-            if (r.claudeResult.tokenUsage) {
-              sessionTokens.total += r.claudeResult.tokenUsage.totalTokens;
-              sessionCost += r.claudeResult.tokenUsage.costUsd;
-            }
-          }
-        }
-        activeWorkers.clear();
-      }
       console.log(chalk.gray('Run "devloop continue" to resume.'));
       break;
     }
+
+    // Check if loop will continue before sleeping
+    if (apiErrorDetected || hookFailureDetected) break;
 
     // Small delay to avoid tight loop
     await sleep(500);
@@ -1469,19 +1665,39 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
     setTerminalTitle('DevLoop: Complete');
   }
 
-  // Clear any remaining crash markers
-  await setActiveTasks(config.workspacePath, []);
+  // Clear crash marker
+  await setActiveTask(config.workspacePath, null);
 
-  // Run final code review when ALL tasks completed
-  if (allTasksComplete || (finalProgress && finalProgress.completed === finalProgress.totalTasks)) {
-    await runFinalReview(config, invoke, logger, overrides?.skipGit, overrides?.skipStdin);
+  // Run consolidated verification and final review when ALL tasks completed
+  const allComplete = allTasksComplete || (finalProgress != null && finalProgress.completed === finalProgress.totalTasks);
+  if (allComplete) {
+    let verificationPassed = true;
+
+    // Run consolidated verification unless per-task verification was used
+    if (!config.verifyEachTask) {
+      const completedTasks = finalTaskList?.filter(t => t.status === 'done' && t.verification) ?? [];
+      if (completedTasks.length > 0) {
+        verificationPassed = await runDeferredVerification(
+          config, completedTasks, invoke, logger, overrides?.skipGit
+        );
+        if (!verificationPassed) {
+          console.log(chalk.yellow('Skipping final review — verification did not pass.'));
+          console.log(chalk.cyan('Run "devloop continue" to retry.'));
+        }
+      }
+    }
+
+    // Final review only if verification passed (or per-task verification was used)
+    if (config.verifyEachTask || verificationPassed) {
+      await runFinalReview(config, invoke, logger, overrides?.skipGit, overrides?.skipStdin);
+    }
   }
 
   // Show next steps when all tasks are done
-  if (allTasksComplete || (finalProgress && finalProgress.completed === finalProgress.totalTasks)) {
+  if (allComplete) {
     console.log(chalk.green('All tasks complete!'));
     console.log(chalk.cyan('Run "devloop continue" to start the next iteration.'));
-    console.log(chalk.gray('Or clean up: rm -rf .devloop .claude'));
+    console.log(chalk.gray('Or clean up: "devloop continue" → Remove all DevLoop files'));
   }
 }
 

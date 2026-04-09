@@ -27,8 +27,8 @@ export function parseProgressContent(content: string): Progress {
 
   for (const block of iterationBlocks) {
     const headerMatch = block.match(/### Iteration (\d+) - (.+)/);
-    const taskAttemptedMatch = block.match(/- \*\*Task Attempted\*\*: ([\w-]+)/);
-    const taskMatch = block.match(/- \*\*Task Completed\*\*: ([\w-]+|none)/);
+    const taskAttemptedMatch = block.match(/- \*\*Task Attempted\*\*: (.+)/);
+    const taskMatch = block.match(/- \*\*Task Completed\*\*: (.+)/);
     const summaryMatch = block.match(/- \*\*Summary\*\*: (.+)/);
     const durationMatch = block.match(/- \*\*Duration\*\*: (.+)/);
     const statusMatch = block.match(/- \*\*Exit Status\*\*: (\w+)/);
@@ -43,8 +43,8 @@ export function parseProgressContent(content: string): Progress {
       const log: IterationLog = {
         iteration: parseInt(headerMatch[1], 10),
         timestamp: headerMatch[2].trim(),
-        taskAttempted: taskAttemptedMatch?.[1],
-        taskCompleted: taskMatch[1] === 'none' ? null : taskMatch[1],
+        taskAttempted: taskAttemptedMatch?.[1]?.trim(),
+        taskCompleted: taskMatch[1].trim() === 'none' ? null : taskMatch[1].trim(),
         summary: summaryMatch[1].trim(),
         duration: durationMatch[1].trim(),
         exitStatus: statusMatch[1] as ExitStatus
@@ -159,7 +159,11 @@ export function getCompletedTaskIds(progress: Progress): Set<string> {
   const ids = new Set<string>();
   for (const iter of progress.iterations) {
     if (iter.taskCompleted) {
-      ids.add(iter.taskCompleted);
+      // Support comma-separated task IDs from batch execution
+      for (const id of iter.taskCompleted.split(',')) {
+        const trimmed = id.trim();
+        if (trimmed) ids.add(trimmed);
+      }
     }
   }
   return ids;

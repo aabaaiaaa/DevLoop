@@ -140,6 +140,25 @@ describe('parseTasksContent', () => {
     const result = parseTasksContent(content);
     assert.equal(result.tasks[0].verification, '');
   });
+  it('parses tasks with letter suffix IDs', () => {
+    const content = `### TASK-001a: First subtask
+- **Status**: pending
+- **Dependencies**: none
+- **Description**: First sub
+- **Verification**: Check it
+
+### TASK-001b: Second subtask
+- **Status**: pending
+- **Dependencies**: TASK-001a
+- **Description**: Second sub
+- **Verification**: Check it
+`;
+    const result = parseTasksContent(content);
+    assert.equal(result.tasks.length, 2);
+    assert.equal(result.tasks[0].id, 'TASK-001a');
+    assert.equal(result.tasks[1].id, 'TASK-001b');
+    assert.deepEqual(result.tasks[1].dependencies, ['TASK-001a']);
+  });
 });
 
 // --- getNextTask ---
@@ -280,6 +299,42 @@ describe('getNextTask', () => {
     const next = getNextTask(taskList);
     assert.equal(next?.id, 'TASK-001');
   });
+
+  it('respects dependencies between subtask IDs', () => {
+    const taskList = parseTasksContent(`
+### TASK-001a: First
+- **Status**: done
+- **Dependencies**: none
+- **Description**: First
+- **Verification**: Check it
+
+### TASK-001b: Second
+- **Status**: pending
+- **Dependencies**: TASK-001a
+- **Description**: Depends on 001a
+- **Verification**: Check it
+`);
+    const next = getNextTask(taskList);
+    assert.equal(next?.id, 'TASK-001b');
+  });
+
+  it('blocks subtask when dependency is not done', () => {
+    const taskList = parseTasksContent(`
+### TASK-001a: First
+- **Status**: pending
+- **Dependencies**: none
+- **Description**: First
+- **Verification**: Check it
+
+### TASK-001b: Second
+- **Status**: pending
+- **Dependencies**: TASK-001a
+- **Description**: Depends on 001a
+- **Verification**: Check it
+`);
+    const next = getNextTask(taskList);
+    assert.equal(next?.id, 'TASK-001a');
+  });
 });
 
 // --- updateTaskStatus ---
@@ -372,6 +427,19 @@ describe('updateTaskStatus', () => {
     assert.equal(updated, false);
     const after = await fs.readFile(taskPath, 'utf-8');
     assert.equal(after, content);
+  });
+
+  it('updates status of subtask ID', async () => {
+    await fs.writeFile(taskPath, `### TASK-001a: Sub task
+- **Status**: pending
+- **Dependencies**: none
+- **Description**: Do it
+- **Verification**: Check
+`);
+    const updated = await updateTaskStatus(taskPath, 'TASK-001a', 'done');
+    assert.equal(updated, true);
+    const result = await parseTasks(taskPath);
+    assert.equal(result.tasks[0].status, 'done');
   });
 
   it('preserves surrounding content', async () => {

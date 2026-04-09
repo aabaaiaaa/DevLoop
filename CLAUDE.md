@@ -9,6 +9,8 @@ npm run dev -- <command>    # Run CLI in development (e.g., npm run dev -- statu
 npm run build               # Compile TypeScript to dist/
 npm run typecheck           # Type-check without emitting
 npm run start               # Run compiled CLI from dist/
+npm test                    # Run tests
+npm run test:coverage       # Run tests with coverage (enforces thresholds)
 ```
 
 After changes, run `npm run build` to update the `dist/` folder. The CLI is globally linkable via `npm link`.
@@ -52,17 +54,21 @@ After the interactive Claude session ends:
 ```
 cli.ts → commands/*.ts → core/loop.ts → core/claude.ts
                               ↓
-                    parser/tasks.ts (parse tasks, find available tasks)
+                    parser/tasks.ts (find eligible tasks)
                               ↓
-                    core/worktree.ts (create/merge worktrees, parallel mode)
+                    single task or batch (via Agent tool) execution
                               ↓
                     parser/progress.ts (log iteration)
+                              ↓
+                    consolidated verification (default) or per-task verification
+                              ↓
+                    final code review
 ```
 
 ### Key Abstractions
 
 - **Workspace**: A directory containing `.devloop/` (with `requirements.md`, `tasks.md`, `progress.md`, `session.json`) and `.claude/` (with `CLAUDE.md`, `settings.json`). Resolved via: CLI flag → global config → cwd.
-- **Session**: Persisted state in `.devloop/session.json` tracking phase (`init`/`run`), iteration count, the DevLoop version that created it (`devloopVersion`), and `activeTasks: ActiveTask[]` for parallel-mode crash recovery (backward compat: also writes `activeTask` for the first task).
+- **Session**: Persisted state in `.devloop/session.json` tracking phase (`init`/`run`), iteration count, the DevLoop version that created it (`devloopVersion`), and `activeTask: ActiveTask | null` for crash recovery.
 - **Global Config**: `~/.devloop/config.json` stores default workspace and settings.
 
 ### Document Formats
@@ -83,51 +89,17 @@ Tasks in `.devloop/tasks.md` follow this structure (regex-parsed in `parser/task
 - **Verification**: How to confirm it's done
 ```
 
-Task selection (`getNextTask`) returns the next task to work on:
+Task IDs support optional letter suffixes for subtasks (e.g., `TASK-001a`, `TASK-001b`). The `TASK_REGEX` is `/^### (TASK-\d+[a-z]*): (.+)$/`.
+
+Task selection uses `getAvailableTasks` (returns all eligible tasks for parallel batching) or `getNextTask` (returns one, used as fallback):
 1. In-progress tasks first (interrupted work that needs retrying)
 2. Then pending tasks, sorted by task ID
 3. Only pending tasks whose dependencies are all `done` are eligible
-
-For parallel execution, `getAvailableTasks(taskList, excludeIds)` returns ALL tasks whose dependencies are met and that aren't currently being worked on.
+4. When 2+ tasks are eligible and `maxParallelTasks >= 2`, they are batched into a single Claude invocation
 
 When a task was previously interrupted (in-progress with an existing progress log), Claude receives context about the previous attempt so it can build on partial work rather than starting from scratch.
 
 During execution, tasks transition: `pending` → `in-progress` (before Claude starts) → `done` (on success). On failure, tasks stay `in-progress` so they are retried next iteration. If the run is stopped gracefully (Q key) mid-task and Claude succeeds, the task is marked `done`.
-
-### Parallel Execution
-
-When git is available and `maxWorkers > 1` (default 5, ceiling 20, configurable via `--max-workers`), DevLoop runs multiple Claude instances simultaneously using git worktrees for file isolation. The parallel git config (`gc.auto=0`, `core.longpaths=true`) is only applied when `maxWorkers > 1`.
-
-**Worker Pool Pattern**: The loop uses a continuous event-loop (`while` loop with `Promise.race`) rather than batched waves. As each worker completes and merges, newly unblocked tasks start immediately. Concurrency is dynamic — limited by the dependency graph and the `maxWorkers` cap. If no workers are active and no tasks are available (all remaining have unmet dependencies), the loop detects a deadlock and stops, listing the blocked tasks.
-
-**Git Worktrees**: Each parallel task gets its own worktree (`.worktrees/T001`, `.worktrees/T003`, etc.) branching from current HEAD. Worktrees share the `.git` object store but have independent working trees. The prompt's workspace path and Claude's `--add-dir` flag both point to the worktree path, so Claude operates entirely within the isolated worktree.
-
-**Merge Strategy**: After a worker completes successfully, the merge is processed on the main workspace (serialized via `mergeMutex`):
-1. `git merge --no-commit --no-ff devloop/TASK-XXX` on main
-2. Restore `.devloop/` and `.claude/` from HEAD via a triple-step process: `checkout HEAD --`, `reset HEAD --`, `checkout --` (handles both modified and newly-created files in those directories)
-3. Run the task's verification command on the merged code (catches semantic conflicts where git merge succeeds but code is broken)
-4. If merge + verification pass: `git commit` with the task completion message
-5. If merge conflicts or verification fails: `git merge --abort` then `git reset --hard HEAD`
-
-Merges are serialized via an async mutex — only one merge at a time.
-
-**Merge Conflict Recovery**: On merge failure or post-merge verification failure:
-1. Capture the diff: `git diff HEAD...devloop/TASK-XXX -- . ':!.devloop' ':!.claude'` (excludes DevLoop-managed files)
-2. Store the diff in a `priorDiffs` map and increment the task's `mergeFailureCounts` counter
-3. Mark the task back to `pending` for re-queue
-4. Next time the task is picked up, `buildTaskPrompt` receives the diff via `priorDiff` option, which adds a "PRIOR ATTEMPT" section to the prompt instructing Claude to reapply the changes to the updated codebase
-5. After 2 merge failures for the same task, it runs sequentially on the main workspace (no worktree) to guarantee no merge conflicts
-
-**Concurrency Safety**:
-- `gc.auto=0` and `core.longpaths=true` configured at run start (only when `maxWorkers > 1`)
-- File writes (`tasks.md`, `progress.md`) protected by `fileMutex` (`AsyncMutex` in `core/mutex.ts`)
-- Merge operations protected by `mergeMutex` (separate from `fileMutex`)
-- `.worktrees/` added to `.gitignore`
-- Stale worktrees cleaned up at start of each run via `git worktree prune` and deletion of orphaned `devloop/*` branches
-- Session tracks `activeTasks: ActiveTask[]` for crash recovery, updated after each worker starts and each worker completes
-- When `isParallel` is true (other workers active), the prompt includes a note: "Other tasks may be running concurrently. Focus only on your assigned task."
-
-**Sequential Fallback**: When git is not available, `maxWorkers` is 1, or `skipWorktrees` override is set, the loop runs one task at a time using the main workspace directly (no worktrees). Tasks that fail to merge twice also fall back to sequential execution on the main workspace.
 
 ### Status Cross-Reference
 
@@ -146,21 +118,21 @@ Automated mode uses `--add-dir <workspace>` to restrict Claude's file operations
 
 Additionally, `.devloop/` and `.claude/` directories are deny-listed in `settings.json` during automated runs, preventing Claude from editing DevLoop's own configuration, task definitions, or progress files.
 
-In parallel mode, each worktree gets its own `.claude/settings.json` generated with the worktree path (not the main workspace path), so the deny rules and `--add-dir` scope are correctly set for the worktree directory.
-
 ### Progress Indicators
 
-The run loop provides visual feedback:
-- **Terminal title**: Updated via ANSI escape sequence (`\x1b]0;TITLE\x07`) to show active workers and progress
-- **Spinner**: Built-in spinner (`core/spinner.ts`) shows active tasks and completion status
-- **Parallel format**: `Working: TASK-001, TASK-003 (2 active, 4/10 done)`
-- **Terminal title format**: `DevLoop: {active} active | {completed}/{total} done`
+The run loop provides visual feedback for both single-task and batch execution:
+- **Terminal title**: Updated via ANSI escape sequence (`\x1b]0;TITLE\x07`) to show current task/batch and progress
+- **Spinner**: Built-in spinner (`core/spinner.ts`) shows elapsed time and current tool activity (e.g., `Working: TASK-001 (2/10 done) - Reading file (1m 23s)` or `Batch: 5 tasks (2/10 done) - Using Agent (45s)`)
+- **Task details**: When a task or batch starts, each task's ID, title, description, and verification are printed to the console
+- **Tool usage stats**: After completion, shows a breakdown of tool calls and durations (Bash, Read, Write, Edit, etc.) for both single tasks and batches
+- **Terminal title format**: `DevLoop: TASK-XXX | {completed}/{total} done` or `DevLoop: Batch (N tasks) | {completed}/{total} done`
 
 ### Graceful Shutdown
 
 The run loop uses **stdin keypresses** (not SIGINT) for graceful shutdown, avoiding the problem of SIGINT propagating to the child Claude process and killing it mid-task:
 
-- **Q key**: Sets `stopRequested` flag. The spinner is paused and a persistent `>> Graceful stop requested` message is displayed via `stopAndPersist`, then the spinner resumes. In parallel mode, the loop stops spawning new workers and waits for ALL active workers to complete via `Promise.allSettled`. Completed workers that succeeded are merged back to main. If merges succeed, the tasks are marked as done; work is not lost. The `activeSpinner` module-level variable gives the `onData` handler access to the spinner so the message is visible immediately (plain `console.log` gets overwritten by spinner redraws).
+- **Q key (during tasks)**: Toggles `stopRequested` on/off. First press shows yellow `>> Graceful stop requested... Press Q again to cancel.` — after the current task/batch completes, the loop stops. Second press shows green `>> Stop cancelled` and the loop continues normally. If the task succeeds while stop is requested, it is still marked as done; work is not lost. The `activeSpinner` module-level variable gives the `onData` handler access to the spinner so the message is visible immediately (plain `console.log` gets overwritten by spinner redraws).
+- **Q key (during verification)**: Kills the entire Claude process tree immediately (including spawned test runners) and skips verification. The `inVerificationPhase` flag controls which Q behaviour applies. The final review still proceeds.
 - **Ctrl+C**: Force stop. In raw mode this is handled as a keypress (`\x03`), calling `process.exit(1)`. This kills everything including all Claude child processes.
 
 When stdin is a TTY, raw mode (`setRawMode(true)`) is used so keypresses arrive immediately. On Windows (especially Git Bash/mintty), stdin may not be detected as a TTY; in that case a line-buffered fallback is used (`q` + Enter). Raw mode is defensively re-enabled after each child process spawn, since spawning `cmd.exe` on Windows can reset the console input mode.
@@ -168,13 +140,12 @@ When stdin is a TTY, raw mode (`setRawMode(true)`) is used so keypresses arrive 
 ### Interrupted Work Recovery
 
 If a run is interrupted (Ctrl+C) mid-task, the next run detects uncommitted git changes and commits them before continuing:
-- Lists changed files to the console
+- Lists changed files to the console (excluding `.devloop/` and `.claude/` files, which are DevLoop's own state files and not interrupted work)
 - Commits the partial work with message: `DevLoop: Interrupted work on TASK-XXX - Task title`
 - Claude then starts fresh with a clean working tree
 - The partial work is preserved in git history and can be recovered if needed
 - If commit fails, DevLoop stops and requires manual resolution (prevents inconsistent state)
-
-In parallel mode, stale worktrees from crashed runs are also cleaned up at the start of each run via `cleanupStaleWorktrees()` which runs `git worktree prune` and deletes orphaned `devloop/*` branches.
+- The exclusion filter in `getUncommittedChanges` matches paths with or without a leading dot (e.g., both `.devloop/` and `devloop/`) to handle cases where the git root differs from the workspace root
 
 ### Git Integration
 
@@ -196,6 +167,7 @@ DevLoop tracks API token usage via Claude's `--output-format stream-json` flag:
 - **Session vs Project tracking**: Loop tracks both session tokens (current run) and project tokens (all-time from `.devloop/progress.md`)
 - **Token limit**: `DevLoopConfig.tokenLimit` stops the loop when the current session exceeds the threshold (not cumulative across all runs)
 - **Cost limit**: `DevLoopConfig.costLimit` stops the loop when session cost exceeds the threshold. Default: `$10`. Hard ceiling: `$500`.
+- **Task timeout**: `DevLoopConfig.taskTimeout` kills the Claude child process if a task exceeds the limit. Default: `150 minutes` (2h30m). Configurable via `--task-timeout <minutes>`.
 - **Iteration ceiling**: `maxIterations` defaults to `100` with a hard ceiling of `1000`, clamped in `buildRunConfig()`.
 - **Detailed breakdown**: Displays individual token counts (input, output, cache write, cache read) and blended price per million tokens
 - **Price per million**: Calculated as `(cost / tokens) * 1,000,000` - a blended rate useful for gauging efficiency
@@ -210,7 +182,7 @@ When the run loop completes (all tasks done, Q key, cost/token limit, or API err
 - **Failure analysis**: Per-task failure counts, whether each was eventually overcome ("succeeded" vs "still in-progress"), and error type breakdown
 - **Token/cost summary**: Session totals and average cost per task
 
-Timing data is collected in an `IterationTiming[]` array during the run (raw milliseconds), avoiding the need to parse formatted duration strings from progress.md.
+Timing data is collected in an `IterationTiming[]` array during the run (raw milliseconds), avoiding the need to parse formatted duration strings from progress.md. The `workDuration` and `verificationDuration` fields in progress.md are only populated when `--verify-each-task` is used; in the default consolidated mode, these are null since test suites are deferred.
 
 The `IterationLog` type includes a `taskAttempted` field that records which task was targeted in each iteration, even on failure. This enables failure correlation — determining whether a failed task was later retried and succeeded.
 
@@ -235,7 +207,52 @@ When all tasks complete, `runFinalReview()` in `loop.ts` automatically invokes C
 
 The report is written to `.devloop/review.md` and automatically opened in the user's default application. It is committed to git and archived alongside other files when starting a new iteration.
 
-The review only runs when genuinely all tasks are complete — not on partial stops (Q key, cost limit, iteration limit, API errors). The `invoke` function is used (respects `overrides.invoker` for testing) and file opening is skipped during tests (via `skipStdin`/`skipOpen`).
+The review only runs when genuinely all tasks are complete — not on partial stops (Q key, cost limit, iteration limit, API errors). When consolidated verification is enabled (the default), the review is additionally gated on verification passing. The `invoke` function is used (respects `overrides.invoker` for testing) and file opening is skipped during tests (via `skipStdin`/`skipOpen`).
+
+### Task Timeout
+
+Tasks have a configurable timeout (default: 150 minutes / 2h30m) via `--task-timeout <minutes>` CLI option or `DevLoopConfig.taskTimeout` (in milliseconds).
+
+- When the timeout fires, the Claude child process is killed via `SIGTERM`
+- The error is classified as `task_failure` (not `network_error`) so the task is retried rather than stopping the loop
+- The `wasTimedOut` flag in `invokeClaudeAutomated` overrides the normal `classifyError` result, which would otherwise match "timeout" as a `network_error` and stop the loop
+
+### Consolidated Verification
+
+By default, DevLoop defers test suite execution to a consolidated phase after all tasks complete. Quick checks (type-checking, linting) still run per-task.
+
+- **Default behavior**: Each task prompt tells Claude to run only quick checks (`tsc --noEmit`, linting) and skip test suites. After all tasks complete, a verification phase runs all test suites once.
+- **Consolidation**: Multiple filtered test commands (e.g., `npm test -- --grep "calculator"` from TASK-001, `npm test -- --grep "parser"` from TASK-002) are consolidated into a single `npm test` run. Different test runners (npm test + pytest) each run once. Exception: long-running E2E suites (Playwright, Cypress, Selenium) are NOT consolidated into full suite runs — only the specific E2E test files relevant to completed tasks are run.
+- **Fix/retry**: If tests fail, Claude identifies which task's changes likely caused the failure, fixes the code, and re-runs only the affected tests. Up to 3 fix cycles.
+- **Final review gate**: The final code review only runs if consolidated verification passes or is skipped by the user. If verification fails, the review is skipped.
+- **Skip with Q key**: During the verification phase, the user can press Q to skip verification. This immediately kills the entire Claude process tree (including any spawned test runners) via `taskkill /T` on Windows or `process.kill(-pid)` on Unix. The skip is logged to `progress.md` as "Consolidated verification skipped by user" and the final review proceeds normally. The `onSpawn` callback in `InvokeClaudeOptions` provides the kill function.
+- **Opt-out**: Use `--verify-each-task` to run verification per-task instead of consolidated at end. Each task runs its own tests before completing (the pre-3.3 behavior). Can be set per-run or permanently:
+  ```bash
+  devloop run --verify-each-task              # Per-run flag
+  devloop continue --verify-each-task         # Also works with continue
+  devloop config set verifyEachTask true      # Persistent workspace setting
+  ```
+- **Logging**: Verification results are logged to `.devloop/logs/VERIFICATION.log` and recorded in `progress.md`.
+
+### Parallel Task Execution
+
+When multiple tasks are eligible to run (all dependencies met), DevLoop batches them into a single Claude invocation that uses the Agent tool to parallelize work.
+
+- **Default behavior**: Up to 5 eligible tasks per batch. Claude analyzes file impact and runs non-conflicting tasks in parallel via agents, serializing conflicting tasks within the batch.
+- **Single-task fallback**: When only 1 task is eligible, the existing single-task flow is used unchanged.
+- **Batch prompt**: Instructs Claude to use the Agent tool, includes all task descriptions and verifications, and requires a structured `TASK_RESULT: TASK-XXX: SUCCESS/FAILED` output for DevLoop to parse per-task outcomes.
+- **Result parsing**: `parseBatchResults()` in `claude.ts` extracts per-task success/failure from Claude's output. Tasks not mentioned are treated as failed.
+- **Partial failure**: If some tasks succeed and others fail in a batch, successful tasks are marked done and failed tasks remain in-progress for retry on the next iteration.
+- **One git commit per batch**: All changes from a batch are committed together, not per-task.
+- **Progress logging**: A batch produces one `IterationLog` entry with comma-separated task IDs in `taskAttempted` and `taskCompleted` fields. `getCompletedTaskIds()` handles comma-separated values.
+- **Batch logs**: Written to `.devloop/logs/BATCH-{iteration}.log` instead of per-task log files.
+- **Configuration**:
+  ```bash
+  devloop run --max-parallel-tasks 3        # Reduce for this run
+  devloop config set maxParallelTasks 2     # Persistent workspace setting
+  ```
+- **Q key during batch**: Graceful stop after the batch completes (same as single-task behavior).
+- **Display consistency**: Batch output matches single-task output — each task's description and verification shown before execution, spinner with timer and activity during, per-task ✓/✗ results after, token breakdown and tool usage stats at the end.
 
 ### API Error Classification
 
@@ -248,7 +265,7 @@ Errors from Claude CLI are classified in `core/claude.ts`:
 - **task_failure**: Claude ran but task didn't complete (not an API error)
 - **unknown**: Unclassified API errors
 
-API errors (all except `task_failure`) stop the loop. In parallel mode, when an API error is detected the loop stops spawning new workers and waits for active workers to finish before exiting. Task failures continue to the next iteration (the task remains in-progress for retry).
+API errors (all except `task_failure`) stop the loop. Task failures continue to the next iteration (the task remains in-progress for retry).
 
 ### Commit Message Format
 
@@ -272,18 +289,32 @@ devloop config list  # Show current config
 
 ### Iterative Requirements
 
-DevLoop supports iterating on requirements through `devloop continue`:
-- **Option 1**: Continue working on current requirements (refine with Claude)
-- **Option 2**: Continue running tasks
-- **Option 3**: Archive and start new requirements (creates a new iteration)
+DevLoop supports iterating on requirements through `devloop continue`. The menu is **contextual** — options shown depend on the current workspace state:
 
-When archiving, the current `requirements.md`, `tasks.md`, `progress.md`, and `review.md` (if present) are copied to `.devloop/archive/iteration-{N}/`, then tasks, progress, and review are deleted so the next iteration starts fresh. Claude is spawned with prior work context to create new requirements and tasks.
+**When all tasks are complete:**
+- View the review (if `review.md` exists)
+- Archive and start next phase
+- Archive and start next phase (informed by review) — CLAUDE.md references the archived review file path for Claude to read when planning the next phase
 
-**Prior context optimization**: To avoid bloating the CLAUDE.md with large task lists, the prior context includes only task titles (not full descriptions/verification steps). Progress summaries are excluded entirely — Claude only needs the requirements and task names to understand what was built.
+**When tasks are incomplete / in init phase:**
+- Continue working on requirements (if in init phase or no tasks exist)
+- Continue running tasks (with progress count, e.g., "5/12 done")
+- Archive and start new requirements
 
-The `Session` type has an `iteration` field (1-based, defaults to 1 for backward compat). `devloop status` displays the iteration number when > 1.
+**Always available:**
+- Remove all DevLoop files — lists directories (`.devloop/`, `.claude/`) and warns about archived iterations, review docs, and logs before requiring explicit confirmation. Defaults to "no".
 
-**Session file handling**: Changes to `.devloop/` and `.claude/` are excluded from the uncommitted changes check that detects interrupted work, so they don't trigger false positives. These files are still committed as part of regular iteration commits.
+State detection uses `detectWorkspaceState()` which checks session phase, task counts, and `review.md` existence.
+
+When archiving, the current `requirements.md`, `tasks.md`, `progress.md`, and `review.md` (if present) are copied to `.devloop/archive/iteration-{N}/` (directory naming uses "iteration" for backward compat), then all four files are deleted so the next phase starts fresh. Claude is spawned with prior work context to create new requirements and tasks.
+
+**Prior context**: To avoid bloating the CLAUDE.md, the prior context includes only task titles (not full descriptions/verification steps). When the "informed by review" option is chosen, CLAUDE.md references the archived review file by path (`.devloop/archive/iteration-{N}/review.md`) rather than embedding its content, so Claude reads the current version from disk and context isn't bloated. `loadPriorContext()` in `core/archive.ts` loads requirements, tasks, progress, and review from the archive directory.
+
+The `Session` type has an `iteration` field (1-based, defaults to 1 for backward compat) which represents the **phase** number — the requirements/planning cycle. User-facing displays use "Phase" (e.g., `devloop status` shows "Phase: 2 (1 previous phase(s) archived)") to distinguish from task attempts. The `lastIteration` field tracks task attempts within the current phase and is displayed as "Task attempts" in `devloop continue`. When `devloop run` creates a new session (`sessionAction: 'create'`), it reads the existing session's phase number and preserves it, so that archives from earlier phases are not overwritten.
+
+**Session file handling**: Changes to `.devloop/` and `.claude/` are excluded from the uncommitted changes check that detects interrupted work, so they don't trigger false positives (e.g., `session.json` is commonly modified after each commit by DevLoop itself). The exclusion matches both `.devloop/` and `devloop/` paths. These files are still committed as part of regular iteration commits.
+
+**Execution plan in `devloop status`**: When tasks remain, status shows an execution plan that walks the dependency graph level by level, showing which tasks will run as batches and which run solo. The first level ("next") is highlighted in bold cyan/white; subsequent levels ("then") are gray. The plan respects `maxParallelTasks` to determine batch sizes. If the project name in `tasks.md` already contains "iteration" or "phase", the phase suffix is omitted from the banner to avoid redundancy.
 
 ### Version Tracking
 
@@ -300,16 +331,23 @@ The `Session` type includes a `devloopVersion` field that records the DevLoop ve
 
 - **`invoker`**: Replaces `invokeClaudeAutomated` — tests pass a mock that returns controlled `ClaudeResult` objects without spawning Claude CLI
 - **`skipStdin`**: Skips `setupGracefulShutdown()` and `ensureStdinListening()` — avoids stdin raw mode interference with the test runner
-- **`skipGit`**: Skips `ensureGitRepo()`, `commitIteration()`, `commitInterruptedWork()`, and `getUncommittedChanges()` — also disables parallel worktree execution since worktrees require git
+- **`skipGit`**: Skips `ensureGitRepo()`, `commitIteration()`, `commitInterruptedWork()`, and `getUncommittedChanges()`
 - **`stopAfterIterations`**: Sets `stopRequested = true` after N iterations complete — simulates Q key press for testing graceful shutdown behavior
-- **`maxWorkers`**: Overrides `config.maxWorkers` for test predictability
-- **`skipWorktrees`**: Forces sequential execution even when git is available — bypasses worktree creation/merge
 
 Production behavior is unchanged when `overrides` is undefined.
 
 Test fixtures in `test/fixtures/calculator.ts` provide:
 - `createCalculatorWorkspace()` / `createPhase2Tasks()` — set up a calculator project with tasks, dependencies, and session
-- `createMockInvoker()` — configurable mock with per-task result overrides and call tracking
-- `createFailThenSucceedMock()` — mock that fails a task N times then succeeds (for retry testing)
+- `createMockInvoker()` — configurable mock with per-task result overrides and call tracking. Recognizes task prompts (via `Task ID:`), batch prompts (`TASKS TO COMPLETE:`), review prompts (`final code review`), and verification prompts (`consolidated test verification`). For batch prompts, generates `TASK_RESULT` lines for each task in the batch.
+- `createFailThenSucceedMock()` — mock that fails a task N times then succeeds (for retry testing). Also recognizes review, verification, and batch prompts
 
-Integration tests in `test/integration.test.ts` cover the full lifecycle: task execution in dependency order, retry on failure, archive + new iteration, cost/iteration limits, API error handling, graceful shutdown, status data, and final code review (creation, skipped on partial stop, archived correctly).
+Integration tests in `test/integration.test.ts` cover the full lifecycle: task execution in dependency order, retry on failure, archive + new iteration (including a 3-phase test verifying archives survive across multiple iterations with `sessionAction: 'create'`), cost/iteration limits, API error handling, graceful shutdown, status data, final code review (creation, skipped on partial stop, archived correctly), and workspace cleanup.
+
+### Test Coverage
+
+`npm run test:coverage` runs tests with c8 and enforces minimum thresholds (75% lines, 75% functions, 70% branches). Coverage is configured in `.c8rc.json`:
+
+- **Included**: All `src/**` files
+- **Excluded**: CLI entry points (`index.ts`, `cli.ts`), command handlers (`commands/continue.ts`, `commands/init.ts`, `commands/config.ts`, `commands/run.ts`, `commands/status.ts`, `commands/workspace.ts`), type definitions (`types/index.ts`), and external-process-heavy modules (`core/git.ts`, `core/claude.ts`, `core/commit-format.ts`) — these are primarily wrappers around child process spawning that cannot be meaningfully unit tested
+
+Pure logic functions extracted from process-heavy modules are exported and tested directly: `classifyError()`, `parseTokenUsage()`, `formatToolActivity()` from `claude.ts`; `isHookError()`, `parseGitStatusOutput()` from `git.ts`.

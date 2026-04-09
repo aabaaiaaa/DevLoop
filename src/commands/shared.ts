@@ -2,6 +2,7 @@ import * as readline from 'readline';
 import chalk from 'chalk';
 import { checkClaudeInstalled } from '../core/claude.js';
 import { getRequirementsPath, getTasksPath, getProgressPath } from '../core/config.js';
+import { getVersion } from '../core/version.js';
 import { DevLoopConfig } from '../types/index.js';
 
 /**
@@ -52,8 +53,11 @@ const BANNER = `
  */
 export function printBanner(subtitle?: string): void {
   console.log(chalk.blue.bold(BANNER));
+  const version = `v${getVersion()}`;
   if (subtitle) {
-    console.log(chalk.blue.bold(`  ${subtitle}`));
+    console.log(chalk.blue.bold(`  ${subtitle}`) + chalk.gray(` (${version})`));
+  } else {
+    console.log(chalk.gray(`  ${version}`));
   }
   console.log();
 }
@@ -64,9 +68,11 @@ export interface RunConfigOptions {
   tasksPath?: string;
   progressPath?: string;
   maxIterations?: string;
-  maxWorkers?: string;
   tokenLimit?: string;
   costLimit?: string;
+  taskTimeout?: string;
+  verifyEachTask?: boolean;
+  maxParallelTasks?: string;
   verbose?: boolean;
   dryRun?: boolean;
   sessionAction?: 'create' | 'update' | 'none';
@@ -79,8 +85,8 @@ const MAX_ITERATIONS_CEILING = 1000;
 const MAX_COST_CEILING = 500;
 const DEFAULT_COST_LIMIT = 10;
 const DEFAULT_MAX_ITERATIONS = 100;
-const DEFAULT_MAX_WORKERS = 5;
-const MAX_WORKERS_CEILING = 20;
+const DEFAULT_TASK_TIMEOUT_MINUTES = 150;
+const DEFAULT_MAX_PARALLEL_TASKS = 5;
 
 export function buildRunConfig(options: RunConfigOptions): DevLoopConfig {
   const maxIterations = Math.min(
@@ -102,10 +108,13 @@ export function buildRunConfig(options: RunConfigOptions): DevLoopConfig {
     dryRun: options.dryRun || false,
     tokenLimit: options.tokenLimit ? parseInt(options.tokenLimit, 10) || undefined : undefined,
     costLimit,
-    maxWorkers: Math.min(
-      Math.max(1, parseInt(options.maxWorkers || String(DEFAULT_MAX_WORKERS), 10) || DEFAULT_MAX_WORKERS),
-      MAX_WORKERS_CEILING
-    ),
-    sessionAction: options.sessionAction
+    taskTimeout: options.taskTimeout
+      ? (parseInt(options.taskTimeout, 10) || DEFAULT_TASK_TIMEOUT_MINUTES) * 60000
+      : DEFAULT_TASK_TIMEOUT_MINUTES * 60000,
+    sessionAction: options.sessionAction,
+    verifyEachTask: options.verifyEachTask,
+    maxParallelTasks: Math.max(1, options.maxParallelTasks
+      ? parseInt(options.maxParallelTasks, 10) || DEFAULT_MAX_PARALLEL_TASKS
+      : DEFAULT_MAX_PARALLEL_TASKS)
   };
 }

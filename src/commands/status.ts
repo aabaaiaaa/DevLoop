@@ -1,12 +1,13 @@
 import * as fs from 'fs/promises';
 import chalk from 'chalk';
 import { printBanner } from './shared.js';
-import { resolveWorkspace, getRequirementsPath, getTasksPath, getProgressPath } from '../core/config.js';
+import { resolveWorkspace, getRequirementsPath, getTasksPath, getProgressPath, readWorkspaceConfig } from '../core/config.js';
 import { readSession } from '../core/session.js';
-import { parseTasks, getNextTask } from '../parser/tasks.js';
+import { parseTasks, getNextTask, getAvailableTasks } from '../parser/tasks.js';
 import { readProgress } from '../parser/progress.js';
 import { getUncommittedChanges, getUncommittedDiff } from '../core/git.js';
 import { getArchivedIterations } from '../core/archive.js';
+import { getVersion } from '../core/version.js';
 
 interface StatusOptions {
   workspace?: string;
@@ -47,6 +48,7 @@ export async function statusCommand(options: StatusOptions): Promise<void> {
 
     if (options.json) {
       console.log(JSON.stringify({
+        devloopVersion: getVersion(),
         workspace,
         project: taskList.projectName,
         iteration: iterationNum,
@@ -63,16 +65,17 @@ export async function statusCommand(options: StatusOptions): Promise<void> {
       return;
     }
 
-    const iterationLabel = iterationNum > 1 ? ` - Iteration ${iterationNum}` : '';
+    const projectNameHasIteration = /iteration|phase/i.test(taskList.projectName);
+    const iterationLabel = (iterationNum > 1 && !projectNameHasIteration) ? ` - Phase ${iterationNum}` : '';
     printBanner(`${taskList.projectName}${iterationLabel}`);
     console.log(chalk.gray(`Workspace: ${workspace}`));
 
     if (session) {
       console.log(chalk.gray(`Phase: ${session.phase}`));
-      console.log(chalk.gray(`DevLoop version: ${session.devloopVersion || 'unknown (pre-3.0)'}`));
+      console.log(chalk.gray(`Session created with: ${session.devloopVersion ? `v${session.devloopVersion}` : 'unknown (pre-3.0)'}`));
     }
     if (archived.length > 0) {
-      console.log(chalk.gray(`Iteration: ${iterationNum} (${archived.length} archived)`));
+      console.log(chalk.gray(`Phase: ${iterationNum} (${archived.length} previous phase(s) archived)`));
     }
 
     console.log();
@@ -83,7 +86,7 @@ export async function statusCommand(options: StatusOptions): Promise<void> {
     console.log(chalk.gray(`  Pending:        ${pending.length}`));
 
     if (progress) {
-      console.log(chalk.gray(`  Iterations run: ${progress.iterations.length}`));
+      console.log(chalk.gray(`  Task attempts:  ${progress.iterations.length}`));
 
       // Calculate cumulative token usage
       let totalTokens = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, total: 0 };
@@ -168,12 +171,73 @@ export async function statusCommand(options: StatusOptions): Promise<void> {
       console.log(`  ${statusIcon} ${statusColor(task.id)}: ${task.title}`);
     }
 
-    if (nextTask) {
-      console.log(chalk.cyan(`\nNext task: ${nextTask.id} - ${nextTask.title}`));
-    } else if (pending.length > 0) {
-      console.log(chalk.yellow('\nNo tasks available (all remaining tasks have unmet dependencies)'));
-    } else {
+    if (pending.length === 0 && inProgress.length === 0) {
       console.log(chalk.green('\nAll tasks complete!'));
+    } else {
+      // Build execution plan showing dependency levels
+      const wsConfig = await readWorkspaceConfig(workspace);
+      const maxParallel = wsConfig.maxParallelTasks ? parseInt(String(wsConfig.maxParallelTasks), 10) || 5 : 5;
+      const remaining = taskList.tasks.filter(t => t.status !== 'done');
+
+      if (remaining.length > 0) {
+        console.log(chalk.white('\nExecution plan:'));
+
+        // Simulate execution levels by walking the dependency graph
+        const simDone = new Set(done.map(t => t.id));
+        const simRemaining = [...remaining];
+        let level = 1;
+
+        while (simRemaining.length > 0) {
+          // Find tasks whose dependencies are all in simDone
+          const eligible = simRemaining.filter(t =>
+            t.dependencies.every(dep => dep === 'none' || simDone.has(dep))
+          );
+
+          if (eligible.length === 0) {
+            // Remaining tasks have unmet dependencies that can't be resolved
+            for (const t of simRemaining) {
+              const unmet = t.dependencies.filter(dep => dep !== 'none' && !simDone.has(dep));
+              console.log(chalk.red(`  ✗ ${t.id}: ${t.title}  (blocked: ${unmet.join(', ')})`));
+            }
+            break;
+          }
+
+          const batch = eligible.slice(0, maxParallel);
+          const isBatch = batch.length >= 2;
+          const isNext = level === 1;
+          const levelLabel = isNext ? 'next' : 'then';
+          const labelColor = isNext ? chalk.cyan.bold : chalk.gray;
+          const taskColor = isNext ? chalk.white : chalk.gray;
+          const iconStr = isNext ? chalk.cyan.bold('→') : chalk.gray('→');
+
+          if (isBatch) {
+            console.log(labelColor(`  ${levelLabel}: batch (${batch.length} tasks in parallel)`));
+            for (const t of batch) {
+              const icon = t.status === 'in-progress' ? chalk.yellow('●') : iconStr;
+              console.log(taskColor(`    ${icon} ${t.id}: ${t.title}`));
+            }
+          } else {
+            const t = batch[0];
+            const icon = t.status === 'in-progress' ? chalk.yellow('●') : iconStr;
+            console.log(`  ${labelColor(levelLabel + ':')} ${icon} ${taskColor(`${t.id}: ${t.title}`)}`);
+          }
+
+          // Mark this level's tasks as "done" for the next level
+          for (const t of batch) {
+            simDone.add(t.id);
+            const idx = simRemaining.findIndex(r => r.id === t.id);
+            if (idx >= 0) simRemaining.splice(idx, 1);
+          }
+
+          // If there are more eligible tasks beyond maxParallel, they form the next level
+          const overflow = eligible.slice(maxParallel);
+          if (overflow.length > 0) {
+            // Don't remove overflow from simRemaining — they'll be picked up next iteration
+          }
+
+          level++;
+        }
+      }
     }
 
     console.log();

@@ -5,7 +5,7 @@ interface ConfigOptions {
   workspace?: string;
 }
 
-const VALID_CONFIG_KEYS = ['devloopCommitFormat'];
+const VALID_CONFIG_KEYS = ['devloopCommitFormat', 'verifyEachTask', 'maxParallelTasks'];
 
 export async function configSetCommand(key: string, value: string, options: ConfigOptions): Promise<void> {
   if (!VALID_CONFIG_KEYS.includes(key)) {
@@ -92,7 +92,12 @@ export async function configListCommand(options: ConfigOptions): Promise<void> {
   console.log(chalk.gray('             "Complete TASK-001 - Fix the bug"'));
   console.log(chalk.gray('             "Attempted TASK-002 - Add feature"'));
   console.log();
-  console.log(chalk.white('Example:'));
+  console.log(chalk.white('verifyEachTask:'));
+  console.log(chalk.gray('  Set to "true" to run verification per-task instead of consolidated at end.'));
+  console.log(chalk.gray('  Default: not set (consolidated verification)'));
+  console.log();
+  console.log(chalk.white('Examples:'));
   console.log(chalk.gray('  devloop config set devloopCommitFormat "chore(devloop): {action}"'));
+  console.log(chalk.gray('  devloop config set verifyEachTask true'));
   console.log();
 }

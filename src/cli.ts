@@ -28,9 +28,11 @@ program
   .description('Resume work on requirements or task execution')
   .option('-w, --workspace <path>', 'Workspace directory')
   .option('-i, --max-iterations <number>', 'Maximum iterations for run (ceiling: 1000)', '100')
-  .option('-W, --max-workers <number>', 'Maximum parallel Claude instances (default: 5, ceiling: 20)', '5')
   .option('-t, --token-limit <number>', 'Stop when cumulative tokens exceed this limit')
   .option('-c, --cost-limit <number>', 'Stop when session cost (USD) exceeds this limit (default: $10, ceiling: $500)')
+  .option('--task-timeout <minutes>', 'Kill task after N minutes (default: 150)', '150')
+  .option('--verify-each-task', 'Run verification per task instead of consolidated at end')
+  .option('--max-parallel-tasks <number>', 'Max tasks to run in parallel per batch (default: 5)')
   .option('--verbose', 'Verbose output (show Claude raw output)')
   .action(continueCommand);
 
@@ -41,7 +43,9 @@ program
   .option('-i, --max-iterations <number>', 'Maximum iterations (ceiling: 1000)', '100')
   .option('-t, --token-limit <number>', 'Stop when cumulative tokens exceed this limit')
   .option('-c, --cost-limit <number>', 'Stop when session cost (USD) exceeds this limit (default: $10, ceiling: $500)')
-  .option('-W, --max-workers <number>', 'Maximum parallel Claude instances (default: 5, ceiling: 20)', '5')
+  .option('--task-timeout <minutes>', 'Kill task after N minutes (default: 150)', '150')
+  .option('--verify-each-task', 'Run verification per task instead of consolidated at end')
+  .option('--max-parallel-tasks <number>', 'Max tasks to run in parallel per batch (default: 5)')
   .option('--verbose', 'Verbose output (show Claude raw output)')
   .option('--dry-run', 'Show what would be done without executing')
   .action(runCommand);
@@ -59,7 +63,7 @@ const configCommand = program
 
 configCommand
   .command('set <key> <value>')
-  .description('Set a config value. Keys: devloopCommitFormat. Variable: {action}')
+  .description('Set a config value. Keys: devloopCommitFormat, verifyEachTask')
   .option('-w, --workspace <path>', 'Workspace directory')
   .action(configSetCommand);
 

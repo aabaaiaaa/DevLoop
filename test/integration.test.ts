@@ -12,6 +12,7 @@ import { archiveIteration, getArchivedIterations } from '../src/core/archive.js'
 import {
   createCalculatorWorkspace,
   createPhase2Tasks,
+  createPhase3Tasks,
   createMockInvoker,
   createFailThenSucceedMock
 } from './fixtures/calculator.js';
@@ -42,13 +43,14 @@ describe('integration: calculator project lifecycle', () => {
       const config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '10',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 
       await runLoop(config, { ...TEST_OVERRIDES, invoker });
 
-      // Filter out the final review call
-      const taskCalls = calls.filter(c => c.taskId !== 'REVIEW');
+      // Filter out the review and verification calls
+      const taskCalls = calls.filter(c => c.taskId !== 'REVIEW' && c.taskId !== 'VERIFICATION');
 
       // All 4 tasks should have been attempted
       assert.equal(taskCalls.length, 4);
@@ -69,28 +71,35 @@ describe('integration: calculator project lifecycle', () => {
         assert.equal(task.status, 'done', `${task.id} should be done`);
       }
 
-      // Progress should have 4 successful iterations
+      // Progress should have 4 task iterations + 1 verification iteration
       const progress = await readProgress(path.join(tmpDir, '.devloop', 'progress.md'));
       assert.ok(progress);
-      assert.equal(progress!.iterations.length, 4);
+      const taskIterations = progress!.iterations.filter(i => i.taskAttempted !== 'VERIFICATION');
+      assert.equal(taskIterations.length, 4);
       assert.equal(progress!.completed, 4);
-      for (const iter of progress!.iterations) {
+      for (const iter of taskIterations) {
         assert.equal(iter.exitStatus, 'success');
         assert.ok(iter.taskAttempted);
         assert.ok(iter.taskCompleted);
       }
+
+      // Verification iteration should exist
+      const verificationIter = progress!.iterations.find(i => i.taskAttempted === 'VERIFICATION');
+      assert.ok(verificationIter);
+      assert.equal(verificationIter!.exitStatus, 'success');
 
       // Session should be updated
       const session = await readSession(tmpDir);
       assert.ok(session);
       assert.equal(session!.lastIteration, 4);
 
-      // Task logs should exist
+      // Task logs should exist (4 tasks + VERIFICATION.log)
       const logsDir = path.join(tmpDir, '.devloop', 'logs');
       const logs = await fs.readdir(logsDir);
-      assert.equal(logs.length, 4);
+      assert.equal(logs.length, 5);
       assert.ok(logs.includes('TASK-001.log'));
       assert.ok(logs.includes('TASK-004.log'));
+      assert.ok(logs.includes('VERIFICATION.log'));
     });
 
     it('respects task dependencies (only runs eligible tasks)', async () => {
@@ -100,6 +109,7 @@ describe('integration: calculator project lifecycle', () => {
       const config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '1',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 
@@ -122,13 +132,14 @@ describe('integration: calculator project lifecycle', () => {
       const config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '10',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 
       await runLoop(config, { ...TEST_OVERRIDES, invoker });
 
-      // Filter out the final review call
-      const taskCalls = calls.filter(c => c.taskId !== 'REVIEW');
+      // Filter out the review and verification calls
+      const taskCalls = calls.filter(c => c.taskId !== 'REVIEW' && c.taskId !== 'VERIFICATION');
 
       // Should have 5 task calls: TASK-001, TASK-002 (fail), TASK-002 (succeed), TASK-003, TASK-004
       assert.equal(taskCalls.length, 5);
@@ -144,10 +155,11 @@ describe('integration: calculator project lifecycle', () => {
         assert.equal(task.status, 'done', `${task.id} should be done`);
       }
 
-      // Progress should show the failure and retry
+      // Progress should show the failure, retry, and verification
       const progress = await readProgress(path.join(tmpDir, '.devloop', 'progress.md'));
       assert.ok(progress);
-      assert.equal(progress!.iterations.length, 5);
+      const taskIters = progress!.iterations.filter(i => i.taskAttempted !== 'VERIFICATION');
+      assert.equal(taskIters.length, 5);
 
       const failedIter = progress!.iterations.find(
         i => i.exitStatus === 'error' && i.taskAttempted === 'TASK-002'
@@ -173,6 +185,7 @@ describe('integration: calculator project lifecycle', () => {
       const phase1Config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '10',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 
@@ -198,13 +211,14 @@ describe('integration: calculator project lifecycle', () => {
       const phase2Config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '10',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 
       await runLoop(phase2Config, { ...TEST_OVERRIDES, invoker: phase2Invoker });
 
-      // Filter out the final review call
-      const taskCalls = phase2Calls.filter(c => c.taskId !== 'REVIEW');
+      // Filter out the review and verification calls
+      const taskCalls = phase2Calls.filter(c => c.taskId !== 'REVIEW' && c.taskId !== 'VERIFICATION');
 
       // All 3 Phase 2 tasks should have been executed
       assert.equal(taskCalls.length, 3);
@@ -222,6 +236,151 @@ describe('integration: calculator project lifecycle', () => {
       const session = await readSession(tmpDir);
       assert.ok(session);
       assert.equal(session!.iteration, 2);
+    });
+  });
+
+  // --- Phase 3: Verify archives survive across multiple iterations ---
+
+  describe('Phase 3: archives preserved across iterations', () => {
+    it('preserves all archived iterations when using sessionAction create', async () => {
+      // Phase 1: init and run
+      await createCalculatorWorkspace(tmpDir);
+      const { invoker: p1Invoker } = createMockInvoker();
+      // Use sessionAction: 'create' to simulate real `devloop run` (this was the bug)
+      await runLoop(buildRunConfig({ workspace: tmpDir, maxIterations: '10', maxParallelTasks: '1', sessionAction: 'create' }), { ...TEST_OVERRIDES, invoker: p1Invoker });
+
+      // Verify iteration number preserved after run
+      let session = await readSession(tmpDir);
+      assert.equal(session!.iteration, 1);
+
+      // Archive Phase 1 and set up Phase 2
+      await archiveIteration(tmpDir, 1);
+      await createPhase2Tasks(tmpDir);
+      await createSession(tmpDir, 'init', 2);
+
+      // Phase 2: run with sessionAction: 'create' (simulates `devloop run`)
+      const { invoker: p2Invoker } = createMockInvoker();
+      await runLoop(buildRunConfig({ workspace: tmpDir, maxIterations: '10', maxParallelTasks: '1', sessionAction: 'create' }), { ...TEST_OVERRIDES, invoker: p2Invoker });
+
+      // Verify iteration 2 preserved after run (was being reset to 1 before fix)
+      session = await readSession(tmpDir);
+      assert.equal(session!.iteration, 2, 'Session iteration should be 2 after Phase 2 run');
+
+      // Archive Phase 2 and set up Phase 3
+      await archiveIteration(tmpDir, 2);
+      await createPhase3Tasks(tmpDir);
+      await createSession(tmpDir, 'init', 3);
+
+      // Phase 3: run
+      const { invoker: p3Invoker } = createMockInvoker();
+      await runLoop(buildRunConfig({ workspace: tmpDir, maxIterations: '10', maxParallelTasks: '1', sessionAction: 'create' }), { ...TEST_OVERRIDES, invoker: p3Invoker });
+
+      session = await readSession(tmpDir);
+      assert.equal(session!.iteration, 3, 'Session iteration should be 3 after Phase 3 run');
+
+      // Archive Phase 3 too
+      await archiveIteration(tmpDir, 3);
+
+      // All 3 archives must exist with correct content
+      const archived = await getArchivedIterations(tmpDir);
+      assert.deepEqual(archived, [1, 2, 3]);
+
+      const iter1Req = await fs.readFile(path.join(tmpDir, '.devloop', 'archive', 'iteration-1', 'requirements.md'), 'utf-8');
+      assert.ok(iter1Req.includes('Calculator Project'), 'iteration-1 should have Phase 1 requirements');
+
+      const iter2Req = await fs.readFile(path.join(tmpDir, '.devloop', 'archive', 'iteration-2', 'requirements.md'), 'utf-8');
+      assert.ok(iter2Req.includes('Phase 2'), 'iteration-2 should have Phase 2 requirements');
+
+      const iter3Req = await fs.readFile(path.join(tmpDir, '.devloop', 'archive', 'iteration-3', 'requirements.md'), 'utf-8');
+      assert.ok(iter3Req.includes('Phase 3'), 'iteration-3 should have Phase 3 requirements');
+    });
+  });
+
+  // --- Batch execution ---
+
+  describe('batch execution', () => {
+    it('batches eligible tasks when maxParallelTasks > 1', async () => {
+      await createCalculatorWorkspace(tmpDir);
+      const { invoker, calls } = createMockInvoker();
+
+      const config = buildRunConfig({
+        workspace: tmpDir,
+        maxIterations: '10',
+        maxParallelTasks: '5',
+        sessionAction: 'none',
+      });
+
+      await runLoop(config, { ...TEST_OVERRIDES, invoker });
+
+      // Filter out review, verification, batch calls
+      const singleCalls = calls.filter(c => c.taskId !== 'REVIEW' && c.taskId !== 'VERIFICATION' && c.taskId !== 'BATCH');
+      const batchCalls = calls.filter(c => c.taskId === 'BATCH');
+
+      // TASK-001 runs solo (only one eligible at start), TASK-004 runs solo (only one eligible after batch)
+      assert.equal(singleCalls.length, 2);
+      assert.equal(singleCalls[0].taskId, 'TASK-001');
+      assert.equal(singleCalls[1].taskId, 'TASK-004');
+
+      // TASK-002 + TASK-003 should be batched (both depend on TASK-001, now done)
+      assert.equal(batchCalls.length, 1, 'Should have exactly 1 batch call');
+
+      // All tasks should be done
+      const taskList = await parseTasks(path.join(tmpDir, '.devloop', 'tasks.md'));
+      for (const task of taskList.tasks) {
+        assert.equal(task.status, 'done', `${task.id} should be done`);
+      }
+    });
+
+    it('falls back to single-task when maxParallelTasks is 1', async () => {
+      await createCalculatorWorkspace(tmpDir);
+      const { invoker, calls } = createMockInvoker();
+
+      const config = buildRunConfig({
+        workspace: tmpDir,
+        maxIterations: '10',
+        maxParallelTasks: '1',
+        sessionAction: 'none',
+      });
+
+      await runLoop(config, { ...TEST_OVERRIDES, invoker });
+
+      // No batch calls — all single-task
+      const batchCalls = calls.filter(c => c.taskId === 'BATCH');
+      assert.equal(batchCalls.length, 0, 'Should have no batch calls with maxParallelTasks=1');
+
+      // All tasks should still complete
+      const taskList = await parseTasks(path.join(tmpDir, '.devloop', 'tasks.md'));
+      for (const task of taskList.tasks) {
+        assert.equal(task.status, 'done', `${task.id} should be done`);
+      }
+    });
+
+    it('handles partial batch failure correctly', async () => {
+      await createCalculatorWorkspace(tmpDir);
+      // TASK-002 always fails — test that TASK-003 still succeeds in the batch
+      const { invoker } = createMockInvoker({
+        taskResults: {
+          'TASK-002': { success: false, error: 'Compile error' }
+        }
+      });
+
+      const config = buildRunConfig({
+        workspace: tmpDir,
+        maxIterations: '3',
+        maxParallelTasks: '5',
+        sessionAction: 'none',
+      });
+
+      await runLoop(config, { ...TEST_OVERRIDES, invoker });
+
+      const taskList = await parseTasks(path.join(tmpDir, '.devloop', 'tasks.md'));
+      // TASK-001 done (ran solo first), TASK-003 done (succeeded in batch)
+      assert.equal(taskList.tasks.find(t => t.id === 'TASK-001')!.status, 'done');
+      assert.equal(taskList.tasks.find(t => t.id === 'TASK-003')!.status, 'done');
+      // TASK-002 still in-progress (always fails)
+      assert.equal(taskList.tasks.find(t => t.id === 'TASK-002')!.status, 'in-progress');
+      // TASK-004 can't run (depends on TASK-002 which never succeeds)
+      assert.equal(taskList.tasks.find(t => t.id === 'TASK-004')!.status, 'pending');
     });
   });
 
@@ -246,6 +405,7 @@ describe('integration: calculator project lifecycle', () => {
       const config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '10',
+        maxParallelTasks: '1',
         costLimit: '10',
         sessionAction: 'none',
       });
@@ -285,6 +445,7 @@ describe('integration: calculator project lifecycle', () => {
       const config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '10',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 
@@ -353,6 +514,7 @@ describe('integration: calculator project lifecycle', () => {
       const config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '10',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 
@@ -400,6 +562,7 @@ describe('integration: calculator project lifecycle', () => {
       const config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '10',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 
@@ -433,6 +596,7 @@ describe('integration: calculator project lifecycle', () => {
       const config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '10',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 
@@ -459,6 +623,7 @@ describe('integration: calculator project lifecycle', () => {
       const config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '2',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 
@@ -513,6 +678,7 @@ describe('integration: calculator project lifecycle', () => {
       const config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '10',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 
@@ -551,6 +717,7 @@ describe('integration: calculator project lifecycle', () => {
       const config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '10',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 
@@ -574,6 +741,7 @@ describe('integration: calculator project lifecycle', () => {
       const config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '10',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 
@@ -603,6 +771,7 @@ describe('integration: calculator project lifecycle', () => {
       const config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '10',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 
@@ -648,6 +817,7 @@ describe('integration: calculator project lifecycle', () => {
       const config = buildRunConfig({
         workspace: tmpDir,
         maxIterations: '10',
+        maxParallelTasks: '1',
         sessionAction: 'none',
       });
 

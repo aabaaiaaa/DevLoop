@@ -66,7 +66,7 @@ rmdir /s /q %USERPROFILE%\.devloop
 rm -rf ~/.devloop
 ```
 
-Workspace files are stored in `.devloop/` and `.claude/` directories in each project directory. Run `rm -rf .devloop .claude` to remove all DevLoop artifacts.
+Workspace files are stored in `.devloop/` and `.claude/` directories in each project directory. Use `devloop continue` → "Remove all DevLoop files" for safe cleanup with confirmation, or `rm -rf .devloop .claude` manually.
 
 ## Quick Start
 
@@ -119,17 +119,21 @@ devloop init --force            # Overwrite existing requirements and reinitiali
 ### `devloop run`
 
 Executes tasks from `.devloop/tasks.md` in a loop. Each iteration:
-1. Parses `tasks.md` to find the next task (in-progress first, then pending by ID with dependencies respected)
-2. Marks the task as `in-progress` and spawns Claude with the task details
-3. On success, marks the task `done`; on failure, leaves as `in-progress` for retry
+1. Finds all eligible tasks (dependencies met). If 2+ are eligible, batches them into one Claude invocation using the Agent tool for parallel execution
+2. Marks tasks as `in-progress` and spawns Claude
+3. On success, marks tasks `done`; on failure, leaves as `in-progress` for retry
 4. Logs the result to `.devloop/progress.md`
 5. Repeats until all tasks done, cost limit reached, or max iterations reached
+6. Runs consolidated test verification, then a final code review
 
 ```bash
 devloop run                     # Run with defaults ($10 cost limit, 100 max iterations)
 devloop run -i 5                # Limit to 5 iterations
 devloop run -t 500000           # Stop when session tokens exceed 500k
 devloop run -c 20               # Stop when session cost exceeds $20
+devloop run --task-timeout 60   # Kill tasks after 60 minutes (default: 150)
+devloop run --max-parallel-tasks 3  # Limit batch size (default: 5)
+devloop run --verify-each-task  # Run tests per-task instead of consolidated at end
 devloop run --verbose           # Verbose output (show Claude's raw output)
 devloop run --dry-run           # Show what would run without executing
 devloop run -w ./my-project     # Specify workspace
@@ -142,7 +146,7 @@ devloop run -w ./my-project     # Specify workspace
 
 ### `devloop status`
 
-Shows current progress and task list.
+Shows current progress, task list, and an **execution plan** that visualizes how tasks will be batched based on dependencies and `maxParallelTasks`.
 
 ```bash
 devloop status                  # Human-readable output
@@ -155,12 +159,16 @@ The main hub for ongoing work after `devloop init`. Prompts you to choose:
 - **Continue requirements** - Resume refining requirements with Claude
 - **Continue run** - Resume task execution from where you left off
 - **Archive and start new requirements** - Archive current iteration and plan the next phase (see [Iterations](#iterations))
+- **Archive and start next phase (informed by review)** - Same as above, but Claude reads the review recommendations
+- **Remove all DevLoop files** - Clean up `.devloop/` and `.claude/` with confirmation
 
 ```bash
 devloop continue
 devloop continue -i 20          # Continue run with 20 max iterations
 devloop continue -t 500000      # Continue with token limit
 devloop continue -c 20          # Continue with $20 cost limit
+devloop continue --max-parallel-tasks 3  # Limit batch size
+devloop continue --verify-each-task      # Per-task verification
 ```
 
 ### `devloop workspace`
@@ -186,9 +194,10 @@ my-project/
 │   ├── session.json      # Session state, version tracking, crash recovery
 │   ├── config.json       # Workspace config (commit format, etc.)
 │   ├── debug.log         # Debug log for troubleshooting
-│   ├── logs/             # Per-task Claude output logs
-│   │   ├── TASK-001.log  # Full prompt + raw Claude output for each task
-│   │   └── TASK-002.log
+│   ├── logs/             # Claude output logs
+│   │   ├── TASK-001.log  # Full prompt + raw Claude output for single tasks
+│   │   ├── BATCH-2.log   # Batch execution log (multiple tasks)
+│   │   └── VERIFICATION.log  # Consolidated verification log
 │   └── archive/          # Archived iterations (created by devloop continue)
 │       └── iteration-1/
 │           ├── requirements.md
@@ -200,7 +209,7 @@ my-project/
     └── settings.json     # Claude permission rules (auto-generated)
 ```
 
-Cleanup: `rm -rf .devloop .claude` removes everything DevLoop created.
+Cleanup: `devloop continue` → "Remove all DevLoop files" for safe cleanup, or `rm -rf .devloop .claude` manually.
 
 Global config is stored at `~/.devloop/config.json`.
 
@@ -232,18 +241,21 @@ Global config is stored at `~/.devloop/config.json`.
 
 DevLoop provides visual feedback during execution:
 
-- **Terminal title**: Shows current iteration, task ID, and progress (e.g., "DevLoop: 3/100 - TASK-005 (2/12 done)")
-- **Animated spinner**: Displays elapsed time while Claude works on a task
+- **Terminal title**: Shows current task/batch and progress (e.g., "DevLoop: TASK-005 | 2/12 done")
+- **Animated spinner**: Displays elapsed time and current tool activity (e.g., `Working: TASK-005 (2/12 done) - Reading file (1m 23s)`)
+- **Task details**: Each task's description and verification printed before execution (for both single tasks and batches)
+- **Tool usage stats**: After completion, shows a breakdown of tool calls and durations
 - **Final status**: Terminal title updates to show completion status
 
 ## Graceful Shutdown
 
 DevLoop supports graceful shutdown during task execution:
 
-- **Press Q** (or type `q` + Enter in non-TTY terminals): Requests graceful stop. A `>> Graceful stop requested` confirmation is displayed immediately. The current task runs to completion (and is marked as done if successful), then DevLoop stops before starting the next task.
+- **Press Q during tasks** (or type `q` + Enter in non-TTY terminals): Toggles graceful stop. First press requests stop after the current task/batch completes. Press Q again to cancel and continue normally. This lets you recover from accidental presses.
+- **Press Q during verification**: Kills the Claude process tree immediately (including any spawned test runners) and skips verification. This is a one-way action (can't be undone since processes are killed). The final review still proceeds.
 - **Ctrl+C**: Force stops immediately, killing the Claude process mid-task
 
-This allows you to stop the loop without interrupting Claude mid-task. A hint is shown before each task with the appropriate key for your terminal.
+A hint is shown before each task/batch and during the verification phase.
 
 ## Interrupted Work Recovery
 
@@ -271,9 +283,11 @@ DevLoop commits use a configurable format with an `{action}` placeholder that ge
 
 ```bash
 devloop config set devloopCommitFormat "chore(devloop): {action}"
-devloop config get devloopCommitFormat # Show a specific config value
-devloop config list                    # Show all config
-devloop config unset devloopCommitFormat # Remove a config value
+devloop config set verifyEachTask true     # Per-task verification
+devloop config set maxParallelTasks 3      # Limit batch size
+devloop config get devloopCommitFormat     # Show a specific config value
+devloop config list                        # Show all config
+devloop config unset devloopCommitFormat   # Remove a config value
 ```
 
 **Hook failure handling**: If a commit fails due to a hook, DevLoop displays the error, prompts you for a valid commit message (with `{action}` placeholder), retries, and saves the format for future commits.
@@ -312,13 +326,13 @@ When a run completes, DevLoop displays a statistics summary:
 
 ## Task Logs
 
-Each task's full Claude interaction is saved to `.devloop/logs/TASK-XXX.log` for debugging and review. Each log includes:
+Each task's full Claude interaction is saved for debugging and review:
 
-- The prompt sent to Claude
-- Claude's raw stream-json output (all tool calls and reasoning)
-- The final result text
+- **Single tasks**: `.devloop/logs/TASK-XXX.log`
+- **Batches**: `.devloop/logs/BATCH-{iteration}.log`
+- **Verification**: `.devloop/logs/VERIFICATION.log`
 
-Logs are overwritten on retry, so only the latest attempt for each task is kept.
+Each log includes the prompt sent to Claude, raw stream-json output, and the final result text. Logs are overwritten on retry.
 
 ## Final Code Review
 
@@ -332,7 +346,36 @@ When all tasks complete, DevLoop automatically runs one final Claude invocation 
 
 The report is automatically opened for the developer to read. It is committed to git and archived with other iteration files when starting a new iteration.
 
-The review only runs when all tasks are genuinely complete — not on partial stops (Q key, cost limit, etc.).
+The review only runs when all tasks are genuinely complete and verification has passed (or been skipped).
+
+## Consolidated Verification
+
+By default, DevLoop defers test suite execution to a single consolidated phase after all tasks complete. Quick checks (type-checking, linting) still run per-task.
+
+- **How it works**: Each task prompt tells Claude to skip test suites. After all tasks complete, a verification phase runs all test suites once, consolidating overlapping commands (e.g., multiple filtered `npm test` commands become one `npm test` run).
+- **E2E tests**: Long-running E2E suites (Playwright, Cypress, Selenium) are NOT consolidated into full suite runs — only the specific test files relevant to completed tasks are run.
+- **Fix/retry**: If tests fail, Claude identifies which task's changes caused the failure, fixes the code, and re-runs only the affected tests. Up to 3 fix cycles.
+- **Skip with Q**: Press Q during verification to kill the test processes and proceed to the final review.
+- **Per-task mode**: Use `--verify-each-task` to run verification per-task instead (the pre-v3.3 behavior).
+
+```bash
+devloop run --verify-each-task              # Per-run opt-out
+devloop config set verifyEachTask true      # Persistent opt-out
+```
+
+## Parallel Task Execution
+
+When multiple tasks are eligible (all dependencies met), DevLoop batches them into a single Claude invocation. Claude uses the Agent tool internally to run non-conflicting tasks in parallel.
+
+- **Default**: Up to 5 tasks per batch. Claude analyzes file impact and serializes tasks that touch the same files.
+- **Single-task fallback**: When only 1 task is eligible, the existing single-task flow is used.
+- **Partial failure**: If some tasks succeed and others fail in a batch, successful tasks are marked done and failed tasks retry.
+- **Execution plan**: `devloop status` shows a dependency-level visualization of how tasks will be batched.
+
+```bash
+devloop run --max-parallel-tasks 3          # Reduce batch size
+devloop config set maxParallelTasks 2       # Persistent setting
+```
 
 ## API Error Handling
 
@@ -394,6 +437,7 @@ The animated spinner (`src/core/spinner.ts`) is a built-in implementation with n
 | Package | Purpose |
 |---------|---------|
 | @types/node | TypeScript type definitions |
+| c8 | Test coverage reporting and threshold enforcement |
 | typescript | TypeScript compiler (build time) |
 | tsx | TypeScript execution for dev/test |
 
