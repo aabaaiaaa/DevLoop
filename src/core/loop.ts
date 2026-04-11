@@ -1382,9 +1382,16 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
           const commitAction = succeededIds.length === batch.length
             ? `Complete batch: ${batchLabel}`
             : `Partial batch: ${succeededIds.join(', ')} succeeded`;
+          // Build detailed commit body with each task's title
+          const commitBodyLines: string[] = [];
+          for (const t of batch) {
+            const succeeded = succeededIds.includes(t.id);
+            commitBodyLines.push(`${succeeded ? '✓' : '✗'} ${t.id}: ${t.title}`);
+          }
+          const commitBody = commitBodyLines.join('\n');
           const commitResult = await commitIteration(
             config.workspacePath, taskIteration,
-            batchIds[0], commitAction, true, config.verbose
+            batchIds[0], commitAction, true, config.verbose, commitBody
           );
           if (commitResult.hookFailure) {
             hookFailureDetected = true;

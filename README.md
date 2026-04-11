@@ -88,7 +88,7 @@ Each phase archives its requirements, tasks, progress, and review to `.devloop/a
 
 **Final code review** — After verification passes, Claude reviews the entire project against requirements: gaps, code quality, security, test coverage, and recommendations.
 
-**Git integration** — Every task completion is committed. Interrupted work is preserved. Commit message format is configurable and hook-aware.
+**Git integration** — Every task completion is committed. Batch commits include a detailed body listing each task's status and title. Interrupted work is preserved. Commit message format is configurable and hook-aware.
 
 **Graceful shutdown** — Press Q to stop after the current task (press again to cancel). Press Q during verification to skip tests. Ctrl+C force-stops.
 

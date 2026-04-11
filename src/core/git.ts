@@ -264,7 +264,7 @@ async function removeNulFile(workspace: string): Promise<void> {
  * Stage all changes and commit with the given message
  * Returns true if commit was made, false if nothing to commit or error
  */
-export async function gitCommit(workspace: string, message: string, verbose: boolean = false): Promise<{ committed: boolean; error?: string; isHookFailure?: boolean }> {
+export async function gitCommit(workspace: string, message: string, verbose: boolean = false, body?: string): Promise<{ committed: boolean; error?: string; isHookFailure?: boolean }> {
   // Remove any 'nul' file (Windows artifact that blocks commits)
   await removeNulFile(workspace);
 
@@ -295,7 +295,11 @@ export async function gitCommit(workspace: string, message: string, verbose: boo
   }
 
   // Commit the changes
-  const commitResult = await execGit(['commit', '-m', message], workspace);
+  const commitArgs = ['commit', '-m', message];
+  if (body) {
+    commitArgs.push('-m', body);
+  }
+  const commitResult = await execGit(commitArgs, workspace);
   if (!commitResult.success) {
     const errorText = commitResult.error || '';
     const hookFailure = isHookError(errorText);
@@ -540,7 +544,8 @@ export async function commitIteration(
   taskId: string | null,
   taskTitle: string | null,
   success: boolean,
-  verbose: boolean = false
+  verbose: boolean = false,
+  body?: string
 ): Promise<{ committed: boolean; hookFailure?: boolean }> {
   const gitAvailable = await isGitAvailable();
   if (!gitAvailable) {
@@ -563,7 +568,7 @@ export async function commitIteration(
   // Use devloopCommitFormat if configured, otherwise default
   const message = formatDevloopCommit(workspaceConfig.devloopCommitFormat, actionDescription);
 
-  const result = await gitCommit(workspace, message, verbose);
+  const result = await gitCommit(workspace, message, verbose, body);
 
   if (verbose && result.committed) {
     console.log(chalk.gray(`  Git: Committed iteration ${iteration}`));
