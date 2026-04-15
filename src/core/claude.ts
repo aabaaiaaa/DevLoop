@@ -372,7 +372,7 @@ export async function invokeClaudeAutomated(
     child.stderr?.on('data', (data) => {
       const chunk = data.toString();
       const filtered = filterStderrNoise(chunk);
-      if (filtered) {
+      if (filtered.trim()) {
         stderr += filtered;
 
         if (verbose) {

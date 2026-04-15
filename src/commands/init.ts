@@ -198,6 +198,8 @@ ${platform === 'Windows' ? '- Use Windows-compatible commands (e.g., use backsla
 
 You are amending an in-progress project. The user wants to modify the plan while some tasks have already been completed.
 
+**IMPORTANT: Do NOT implement any tasks. Do NOT write code, create source files, install packages, or build anything. Your ONLY job is to update the requirements and task list documents.**
+
 ### Task Status Summary
 
 - **${taskCounts.done} done** (of ${taskCounts.total} total) — these are locked, do NOT modify
@@ -210,7 +212,7 @@ You are amending an in-progress project. The user wants to modify the plan while
 
 At the START of this session, use the **TodoWrite** tool to create a progress checklist visible to the user. Check off each item as you complete it:
 
-1. Review current state (completed work, pending tasks)
+1. Read requirements.md and tasks.md to review current state (completed work, pending tasks)
 2. Discuss amendments with user
 3. Update requirements.md
 4. Update pending tasks in tasks.md (do not modify done/in-progress)
