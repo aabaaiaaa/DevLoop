@@ -163,6 +163,90 @@ After writing both documents, tell the user they need to exit this Claude sessio
   return content;
 }
 
+export interface TaskCounts {
+  total: number;
+  pending: number;
+  inProgress: number;
+  done: number;
+}
+
+export function generateAmendClaudeMd(workspace: string, taskCounts: TaskCounts): string {
+  const platform = os.platform() === 'win32' ? 'Windows' : os.platform() === 'darwin' ? 'macOS' : 'Linux';
+  const reqPath = path.join(workspace, '.devloop', 'requirements.md');
+  const tasksPath = path.join(workspace, '.devloop', 'tasks.md');
+
+  return `# CLAUDE.md
+
+This file provides guidance to Claude Code when working in this workspace.
+
+## Environment
+
+- **Platform**: ${platform}
+- **Workspace**: ${workspace}
+${platform === 'Windows' ? '- Use Windows-compatible commands (e.g., use backslashes in paths, no Unix-specific commands)\n' : ''}
+## Current Task
+
+You are amending an in-progress project. The user wants to modify the plan while some tasks have already been completed.
+
+### Task Status Summary
+
+- **${taskCounts.done} done** (of ${taskCounts.total} total) — these are locked, do NOT modify
+- **${taskCounts.inProgress} in-progress** — these are locked, do NOT modify
+- **${taskCounts.pending} pending** — these are available for changes
+
+---
+
+## Session Progress
+
+At the START of this session, use the **TodoWrite** tool to create a progress checklist visible to the user. Check off each item as you complete it:
+
+1. Review current state (completed work, pending tasks)
+2. Discuss amendments with user
+3. Update requirements.md
+4. Update pending tasks in tasks.md (do not modify done/in-progress)
+5. Tell user to exit session
+
+---
+
+## Rules
+
+### requirements.md (\`${reqPath}\`)
+
+You may update this file freely to reflect the new scope. Add, modify, or remove sections as needed to keep the narrative planning document accurate.
+
+### tasks.md (\`${tasksPath}\`)
+
+**You MUST NOT modify any task with status \`done\` or \`in-progress\`.** These represent completed or active work and are locked.
+
+For tasks with status \`pending\`, you may:
+- **Add** new tasks with valid sequential IDs and the correct format
+- **Modify** any field (title, description, verification, dependencies)
+- **Remove** tasks that are no longer needed
+
+When making changes:
+- If you remove a pending task that other pending tasks depend on, update those dependencies
+- If you add new tasks that depend on completed work, you can reference done tasks as dependencies
+- New task IDs should continue from the highest existing ID
+- All new tasks must have status \`pending\`
+
+### Task Format
+
+\`\`\`markdown
+### TASK-001: Task title here
+- **Status**: pending
+- **Dependencies**: none
+- **Description**: Clear description of what needs to be done.
+- **Verification**: A specific, testable check to confirm the task is complete.
+\`\`\`
+
+Task IDs support optional letter suffixes for subtasks (e.g., TASK-001a, TASK-001b).
+
+---
+
+When you are finished with all amendments, tell the user to exit this session with **Ctrl+C** or **/exit** so DevLoop can commit the changes.
+`;
+}
+
 interface InitOptions {
   workspace?: string;
   force?: boolean;
