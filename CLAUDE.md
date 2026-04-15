@@ -299,6 +299,7 @@ DevLoop supports iterating on requirements through `devloop continue`. The menu 
 **When tasks are incomplete / in init phase:**
 - Continue working on requirements (if in init phase or no tasks exist)
 - Continue running tasks (with progress count, e.g., "5/12 done")
+- Amend requirements and tasks (when at least one task is done — allows editing requirements.md and adding/modifying/removing pending tasks without affecting done/in-progress tasks)
 - Archive and start new requirements
 
 **Always available:**
@@ -315,6 +316,10 @@ The `Session` type has an `iteration` field (1-based, defaults to 1 for backward
 **Session file handling**: Changes to `.devloop/` and `.claude/` are excluded from the uncommitted changes check that detects interrupted work, so they don't trigger false positives (e.g., `session.json` is commonly modified after each commit by DevLoop itself). The exclusion matches both `.devloop/` and `devloop/` paths. These files are still committed as part of regular iteration commits.
 
 **Execution plan in `devloop status`**: When tasks remain, status shows an execution plan that walks the dependency graph level by level, showing which tasks will run as batches and which run solo. The first level ("next") is highlighted in bold cyan/white; subsequent levels ("then") are gray. The plan respects `maxParallelTasks` to determine batch sizes. If the project name in `tasks.md` already contains "iteration" or "phase", the phase suffix is omitted from the banner to avoid redundancy.
+
+### Interactive Session Progress
+
+All interactive Claude sessions (init, continue-requirements, amend-requirements) instruct Claude to use the `TodoWrite` tool at the start of the session to create a visible progress roadmap. Each session type has its own step list matching its workflow. Claude checks items off as it completes each phase, giving the user a clear sense of where the session is in the process.
 
 ### Version Tracking
 
