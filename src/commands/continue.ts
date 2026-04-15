@@ -10,7 +10,7 @@ import { requireClaudeInstalled, buildRunConfig, promptUser as promptYesNo, prin
 import { runLoop } from '../core/loop.js';
 import { parseTasks } from '../parser/tasks.js';
 import { archiveIteration, loadPriorContext } from '../core/archive.js';
-import { generateWorkspaceClaudeMd, generateAmendClaudeMd, commitWithRetry, detectAndConfigureCommitFormat } from './init.js';
+import { generateWorkspaceClaudeMd, generateAmendClaudeMd, generateContinueClaudeMd, commitWithRetry, detectAndConfigureCommitFormat } from './init.js';
 import { ensureGitRepo, getDevloopCommitMessage } from '../core/git.js';
 
 interface ContinueOptions {
@@ -220,6 +220,13 @@ export async function continueCommand(options: ContinueOptions): Promise<void> {
 
 async function continueRequirements(workspace: string, sessionId: string | null): Promise<void> {
   await updateSessionPhase(workspace, 'init');
+
+  // Generate continue-specific CLAUDE.md with TodoWrite instructions
+  const claudeDir = path.join(workspace, '.claude');
+  await fs.mkdir(claudeDir, { recursive: true });
+  const claudeMdPath = path.join(claudeDir, 'CLAUDE.md');
+  const claudeMdContent = generateContinueClaudeMd(workspace);
+  await fs.writeFile(claudeMdPath, claudeMdContent, 'utf-8');
 
   console.log(chalk.cyan('\nResuming requirements session...'));
   console.log(chalk.yellow.bold('\n--- Tips ---'));

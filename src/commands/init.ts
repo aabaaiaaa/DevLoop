@@ -257,6 +257,63 @@ When you are finished with all amendments, tell the user to exit this session wi
 `;
 }
 
+export function generateContinueClaudeMd(workspace: string): string {
+  const platform = os.platform() === 'win32' ? 'Windows' : os.platform() === 'darwin' ? 'macOS' : 'Linux';
+  const reqPath = path.join(workspace, '.devloop', 'requirements.md');
+  const tasksPath = path.join(workspace, '.devloop', 'tasks.md');
+
+  return `# CLAUDE.md
+
+This file provides guidance to Claude Code when working in this workspace.
+
+## Environment
+
+- **Platform**: ${platform}
+- **Workspace**: ${workspace}
+${platform === 'Windows' ? '- Use Windows-compatible commands (e.g., use backslashes in paths, no Unix-specific commands)\n' : ''}
+## Current Task
+
+You are continuing work on the project requirements and task list. The user wants to review and refine the plan.
+
+**IMPORTANT: Do NOT implement the project. Do NOT write code, create source files, install packages, or build anything. Your ONLY job is to update the requirements and task list.**
+
+## Session Progress
+
+At the START of this session, use the **TodoWrite** tool to create a progress checklist visible to the user. Check off each item as you complete it:
+
+1. Review current requirements and tasks
+2. Discuss changes with user
+3. Update requirements.md
+4. Update tasks.md
+5. Tell user to exit session
+
+---
+
+## Files
+
+- **Requirements**: \`${reqPath}\` — the narrative planning document
+- **Tasks**: \`${tasksPath}\` — the structured task list
+
+Start by reading both files to understand the current state, then ask the user what changes they'd like to make.
+
+### Task Format
+
+\`\`\`markdown
+### TASK-001: Task title here
+- **Status**: pending
+- **Dependencies**: none
+- **Description**: Clear description of what needs to be done.
+- **Verification**: A specific, testable check to confirm the task is complete.
+\`\`\`
+
+Task IDs support optional letter suffixes for subtasks (e.g., TASK-001a, TASK-001b).
+
+---
+
+When you are finished with all changes, tell the user to exit this session with **Ctrl+C** or **/exit** so DevLoop can continue.
+`;
+}
+
 interface InitOptions {
   workspace?: string;
   force?: boolean;

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateWorkspaceClaudeMd } from '../src/commands/init.js';
+import { generateWorkspaceClaudeMd, generateContinueClaudeMd } from '../src/commands/init.js';
 
 describe('generateWorkspaceClaudeMd TodoWrite instructions', () => {
   it('includes TodoWrite instructions for init session', () => {
@@ -25,5 +25,26 @@ describe('generateWorkspaceClaudeMd TodoWrite instructions', () => {
       progress: 'some progress',
     });
     assert.ok(content.includes('TodoWrite'), 'should mention TodoWrite tool even with prior context');
+  });
+});
+
+describe('generateContinueClaudeMd', () => {
+  it('includes TodoWrite instructions', () => {
+    const content = generateContinueClaudeMd('/test/workspace');
+    assert.ok(content.includes('TodoWrite'));
+  });
+
+  it('includes the continue-requirements session steps', () => {
+    const content = generateContinueClaudeMd('/test/workspace');
+    assert.ok(content.includes('Review current requirements'));
+    assert.ok(content.includes('Discuss changes'));
+    assert.ok(content.includes('Update requirements.md'));
+    assert.ok(content.includes('Update tasks.md'));
+    assert.ok(content.includes('exit session') || content.includes('exit'));
+  });
+
+  it('includes workspace path', () => {
+    const content = generateContinueClaudeMd('/test/workspace');
+    assert.ok(content.includes('/test/workspace'));
   });
 });
