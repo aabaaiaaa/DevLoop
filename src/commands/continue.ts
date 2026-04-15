@@ -40,7 +40,7 @@ async function promptChoice(question: string): Promise<string> {
 
 // --- Workspace state detection ---
 
-interface WorkspaceState {
+export interface WorkspaceState {
   phase: 'init' | 'run';
   hasRequirements: boolean;
   hasTasks: boolean;
@@ -91,7 +91,7 @@ interface MenuItem {
   action: string;
 }
 
-function buildMenuOptions(state: WorkspaceState): MenuItem[] {
+export function buildMenuOptions(state: WorkspaceState): MenuItem[] {
   const items: MenuItem[] = [];
   let key = 1;
 
@@ -112,6 +112,10 @@ function buildMenuOptions(state: WorkspaceState): MenuItem[] {
     if (state.hasTasks && !state.allTasksDone) {
       const { done, total } = state.taskCounts;
       items.push({ key: String(key++), label: `Continue running tasks (${done}/${total} done)`, action: 'continue-run' });
+    }
+    if (state.hasTasks && !state.allTasksDone && state.taskCounts.done > 0) {
+      const { pending, done } = state.taskCounts;
+      items.push({ key: String(key++), label: `Amend requirements and tasks (${pending} pending, ${done} done)`, action: 'amend-requirements' });
     }
     items.push({ key: String(key++), label: 'Archive and start new requirements', action: 'archive-describe' });
   }
