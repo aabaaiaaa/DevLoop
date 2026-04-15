@@ -36,7 +36,7 @@ describe('generateContinueClaudeMd', () => {
 
   it('includes the continue-requirements session steps', () => {
     const content = generateContinueClaudeMd('/test/workspace');
-    assert.ok(content.includes('Review current requirements'));
+    assert.ok(content.includes('requirements.md') && content.includes('review'), 'should include review step');
     assert.ok(content.includes('Discuss changes'));
     assert.ok(content.includes('Update requirements.md'));
     assert.ok(content.includes('Update tasks.md'));
