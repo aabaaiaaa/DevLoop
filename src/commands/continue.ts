@@ -10,8 +10,8 @@ import { requireClaudeInstalled, buildRunConfig, promptUser as promptYesNo, prin
 import { runLoop } from '../core/loop.js';
 import { parseTasks } from '../parser/tasks.js';
 import { archiveIteration, loadPriorContext } from '../core/archive.js';
-import { generateWorkspaceClaudeMd, commitWithRetry, detectAndConfigureCommitFormat } from './init.js';
-import { ensureGitRepo } from '../core/git.js';
+import { generateWorkspaceClaudeMd, generateAmendClaudeMd, commitWithRetry, detectAndConfigureCommitFormat } from './init.js';
+import { ensureGitRepo, getDevloopCommitMessage } from '../core/git.js';
 
 interface ContinueOptions {
   workspace?: string;
@@ -204,6 +204,9 @@ export async function continueCommand(options: ContinueOptions): Promise<void> {
     case 'view-review':
       await viewReview(workspace);
       break;
+    case 'amend-requirements':
+      await amendRequirements(workspace, session, currentIteration);
+      break;
     case 'clean':
       await cleanWorkspace(workspace);
       break;
@@ -237,6 +240,48 @@ async function continueRequirements(workspace: string, sessionId: string | null)
       console.log(chalk.green('Requirements file is at:'), requirementsPath);
       console.log(chalk.gray('Run "devloop status" to see your tasks.'));
       console.log(chalk.gray('Run "devloop run" to start executing tasks.'));
+    }
+  });
+}
+
+async function amendRequirements(workspace: string, session: Session, currentIteration: number): Promise<void> {
+  // Generate amendment-specific CLAUDE.md
+  const state = await detectWorkspaceState(workspace, session);
+  const claudeDir = path.join(workspace, '.claude');
+  await fs.mkdir(claudeDir, { recursive: true });
+  const claudeMdPath = path.join(claudeDir, 'CLAUDE.md');
+  const claudeMdContent = generateAmendClaudeMd(workspace, state.taskCounts);
+  await fs.writeFile(claudeMdPath, claudeMdContent, 'utf-8');
+
+  console.log(chalk.cyan('\nAmending requirements and tasks...'));
+  console.log(chalk.yellow.bold('\n--- Tips ---'));
+  console.log(chalk.yellow('  Tell Claude what changes you need to the plan.'));
+  console.log(chalk.yellow(`  ${state.taskCounts.done} completed task(s) are locked. ${state.taskCounts.pending} pending task(s) can be changed.`));
+  console.log(chalk.yellow('  Exit with Ctrl+C or /exit when done.'));
+  console.log(chalk.yellow('------------\n'));
+
+  const child = spawnClaudeInteractive(workspace, session.sessionId);
+
+  child.on('error', (err) => {
+    console.log(chalk.red(`\nFailed to start Claude: ${err.message}`));
+  });
+
+  child.on('close', async (code) => {
+    try {
+      console.log(chalk.blue('\n\nSession ended.'));
+      if (code === 0) {
+        await ensureGitRepo(workspace);
+        const action = `Amend requirements (Phase ${currentIteration})`;
+        const commitMessage = await getDevloopCommitMessage(workspace, action);
+        await commitWithRetry(workspace, commitMessage, action);
+
+        console.log(chalk.green('\nRequirements amended.'));
+        console.log(chalk.gray('Run "devloop status" to see your updated tasks.'));
+        console.log(chalk.gray('Run "devloop run" to continue executing tasks.'));
+      }
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.log(chalk.red(`\nError during post-session commit: ${msg}`));
     }
   });
 }
