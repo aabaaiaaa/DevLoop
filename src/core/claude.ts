@@ -83,6 +83,24 @@ export function isApiError(errorType: ClaudeErrorType | undefined): boolean {
 }
 
 /**
+ * Filters out non-actionable warnings from Claude CLI stderr output.
+ * These are informational messages that don't indicate errors and would
+ * otherwise pollute error messages or verbose output.
+ */
+export function filterStderrNoise(chunk: string): string {
+  return chunk
+    .split('\n')
+    .filter(line => {
+      const trimmed = line.trim();
+      // Sandbox warning on Windows (sandbox.enabled set via remote-settings but unsupported)
+      if (trimmed.includes('Sandbox disabled:') && trimmed.includes('sandbox.enabled')) return false;
+      if (trimmed.startsWith('Commands will run WITHOUT sandboxing')) return false;
+      return true;
+    })
+    .join('\n');
+}
+
+/**
  * Creates a workspace-scoped Claude settings file that restricts
  * file operations to the workspace directory only.
  */
@@ -350,13 +368,16 @@ export async function invokeClaudeAutomated(
       }
     });
 
-    // Collect stderr for error messages
+    // Collect stderr for error messages (filtering out non-actionable Claude CLI warnings)
     child.stderr?.on('data', (data) => {
       const chunk = data.toString();
-      stderr += chunk;
+      const filtered = filterStderrNoise(chunk);
+      if (filtered) {
+        stderr += filtered;
 
-      if (verbose) {
-        process.stderr.write(chunk);
+        if (verbose) {
+          process.stderr.write(filtered);
+        }
       }
     });
 
