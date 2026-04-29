@@ -86,11 +86,18 @@ export async function configListCommand(options: ConfigOptions): Promise<void> {
   }
 
   console.log();
-  console.log(chalk.white('Variables for devloopCommitFormat:'));
-  console.log(chalk.gray('  {action} - What DevLoop is doing, e.g.:'));
-  console.log(chalk.gray('             "Initialize workspace"'));
-  console.log(chalk.gray('             "Complete TASK-001 - Fix the bug"'));
-  console.log(chalk.gray('             "Attempted TASK-002 - Add feature"'));
+  console.log(chalk.white('devloopCommitFormat:'));
+  console.log(chalk.gray('  Optional. If unset, DevLoop generates Conventional Commits messages'));
+  console.log(chalk.gray('  itself (feat:, fix:, chore:, etc.) using each task\'s Type field.'));
+  console.log(chalk.gray('  Set this only when your repo\'s commit hooks require a different format.'));
+  console.log(chalk.gray('  Use {action} as a placeholder for the action description.'));
+  console.log(chalk.gray(''));
+  console.log(chalk.gray('  {action} examples:'));
+  console.log(chalk.gray('    "Initialize workspace"'));
+  console.log(chalk.gray('    "Complete TASK-001 - Fix the bug"'));
+  console.log(chalk.gray('    "Attempted TASK-002 - Add feature"'));
+  console.log(chalk.gray(''));
+  console.log(chalk.gray('  Example: devloop config set devloopCommitFormat "chore(devloop): {action}"'));
   console.log();
   console.log(chalk.white('verifyEachTask:'));
   console.log(chalk.gray('  Set to "true" to run verification per-task instead of consolidated at end.'));

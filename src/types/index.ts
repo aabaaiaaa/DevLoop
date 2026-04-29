@@ -2,6 +2,10 @@ export type TaskStatus = 'pending' | 'in-progress' | 'done';
 export type ExitStatus = 'success' | 'error';
 export type SessionPhase = 'init' | 'run';
 
+export type ConventionalType =
+  | 'feat' | 'fix' | 'docs' | 'style' | 'refactor' | 'perf'
+  | 'test' | 'build' | 'ci' | 'chore' | 'revert';
+
 export interface Task {
   id: string;
   title: string;
@@ -9,6 +13,10 @@ export interface Task {
   dependencies: string[];
   description: string;
   verification: string;
+  /** Conventional Commits type for this task. Optional — missing defaults to 'chore' at use sites. */
+  type?: ConventionalType;
+  /** If set, presence triggers a BREAKING CHANGE: footer in the commit. Free-text description. */
+  breakingChange?: string;
 }
 
 export interface TaskList {

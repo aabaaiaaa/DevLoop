@@ -27,10 +27,11 @@ DevLoop is a CLI tool that automates iterative development by orchestrating Clau
 
 ### Init Behavior
 
-The `init` command follows a 3-phase workflow:
+The `init` command follows a 4-phase workflow:
 1. **Discovery**: Claude explores the project scope through conversation. For open-ended questions (features, user flows, edge cases) Claude uses natural conversation. For standard technical choices (language, framework, testing approach, etc.) Claude is instructed to use the `AskUserQuestion` tool to present selectable options. Once discovery is complete, Claude reviews for inconsistencies and gaps before proceeding.
 2. **Write requirements.md**: Claude writes `.devloop/requirements.md` — a free-form, human-readable planning document describing the project
 3. **Generate tasks.md**: Claude generates `.devloop/tasks.md` — the machine-parsed task list derived from the requirements. After writing both documents, Claude tells the user to exit the session (Ctrl+C or /exit) so DevLoop can commit the files.
+4. **Self-review**: Claude reviews `requirements.md` and `tasks.md` for inconsistencies, missing dependencies, broken/circular deps, missing required fields, and scope drift. Auto-fixes major issues and re-reviews up to 3 times. Surfaces minor issues (ambiguity, granularity opinions) for the user to decide on.
 
 The command handles three scenarios:
 - **Fresh init**: No requirements file exists → runs the 3-phase workflow and creates session
@@ -84,10 +85,14 @@ Tasks in `.devloop/tasks.md` follow this structure (regex-parsed in `parser/task
 ```markdown
 ### TASK-001: Title
 - **Status**: pending|in-progress|done
+- **Type**: feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert
 - **Dependencies**: none|TASK-XXX, TASK-YYY
 - **Description**: What to do
 - **Verification**: How to confirm it's done
+- **Breaking**: (optional) Description of any backwards-incompatible change introduced
 ```
+
+The `Type` field drives the Conventional Commits prefix on the auto-generated git commit. Missing or unknown values default to `chore`. The `Breaking` field is optional; when present, its text becomes the body of a `BREAKING CHANGE:` footer in the commit, signalling a major version bump to semver tooling.
 
 Task IDs support optional letter suffixes for subtasks (e.g., `TASK-001a`, `TASK-001b`). The `TASK_REGEX` is `/^### (TASK-\d+[a-z]*): (.+)$/`.
 
@@ -269,17 +274,36 @@ API errors (all except `task_failure`) stop the loop. Task failures continue to 
 
 ### Commit Message Format
 
-All DevLoop commits use the `devloopCommitFormat` config with `{action}` placeholder:
-- Default: `DevLoop: {action}`
-- Example actions: "Initialize workspace", "Complete TASK-001 - Fix bug", "Attempted TASK-002 - Add feature"
+DevLoop's auto-generated commits use one of two formats:
 
-**Auto-detection**: During `devloop init`, commit hooks are auto-detected from commitlint, git hooks, and husky. If detected, the user is prompted for a commit message format.
+**Default (no `devloopCommitFormat` set): Conventional Commits.**
+DevLoop builds messages itself in the form `{type}: {description}`. The type comes from each task's `Type` field; non-task commits (init, amend, review, verification, .gitignore) use `chore`. Failed/attempted/interrupted task commits also use `chore` (failed work shouldn't bump the version). Batch commits promote the highest-priority type from the succeeded tasks (priority order: feat > fix > perf > refactor > revert > build > ci > test > docs > style > chore) and list each task's individual type in the body. Tasks with a `Breaking` field add a `BREAKING CHANGE:` footer.
 
-**Manual configuration**:
+Example single-task commit:
+```
+feat: T14 - Add token tracking
+```
+
+Example batch commit:
+```
+feat: T1, T2, T3
+
+- feat: T1 - Add token tracking
+- fix: T2 - Handle CRLF in tasks.md
+- chore: T3 - Update CLAUDE.md docs
+
+BREAKING CHANGE: T1 changes the /v2 auth header
+```
+
+**Override (`devloopCommitFormat` is set): template substitution.**
+The configured template is used verbatim with `{action}` replaced by a legacy action string ("Complete TASK-001 - Title", "Initialize workspace", etc.). Use this when your repo's commit hooks require a non-Conventional format.
+
 ```bash
 devloop config set devloopCommitFormat "chore(devloop): {action}"
 devloop config list  # Show current config
 ```
+
+**Auto-detection**: During `devloop init`, commit hooks are auto-detected from commitlint, git hooks, and husky. When commitlint is detected, the user is informed that the new Conventional Commits default works out of the box; the user can still supply a custom format if needed.
 
 **Hook failure handling**: If a commit fails due to a hook, DevLoop:
 1. Displays the hook error and attempted message
@@ -299,7 +323,7 @@ DevLoop supports iterating on requirements through `devloop continue`. The menu 
 **When tasks are incomplete / in init phase:**
 - Continue working on requirements (if in init phase or no tasks exist)
 - Continue running tasks (with progress count, e.g., "5/12 done")
-- Amend requirements and tasks (when at least one task is done — allows editing requirements.md and adding/modifying/removing pending tasks without affecting done/in-progress tasks)
+- Amend requirements and tasks (when at least one task is done — allows editing requirements.md and adding/modifying/removing pending tasks without affecting done/in-progress tasks). After amendments, the same Phase 4 self-review runs over the requirements diff and pending tasks; locked tasks are out of scope.
 - Archive and start new requirements
 
 **Always available:**
@@ -319,7 +343,7 @@ The `Session` type has an `iteration` field (1-based, defaults to 1 for backward
 
 ### Interactive Session Progress
 
-All interactive Claude sessions (init, continue-requirements, amend-requirements) instruct Claude to use the `TodoWrite` tool at the start of the session to create a visible progress roadmap. Each session type has its own step list matching its workflow. Claude checks items off as it completes each phase, giving the user a clear sense of where the session is in the process.
+All interactive Claude sessions (init, continue-requirements, amend-requirements) instruct Claude to use the `TodoWrite` tool at the start of the session to create a visible progress roadmap. Each session type has its own step list matching its workflow, including a self-review step before the final "exit session" item. Claude checks items off as it completes each phase, giving the user a clear sense of where the session is in the process.
 
 ### Version Tracking
 

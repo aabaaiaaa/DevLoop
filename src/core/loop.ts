@@ -335,7 +335,12 @@ The ONLY file you should create or write to is the review report at the path abo
 
       // Commit the review file
       if (!skipGit) {
-        await commitIteration(config.workspacePath, 0, 'REVIEW', 'Final code review', true, config.verbose);
+        await commitIteration(
+          config.workspacePath,
+          0,
+          { kind: 'plain', action: 'Final code review', type: 'chore' },
+          config.verbose
+        );
       }
 
       // Open the review file for the developer
@@ -527,7 +532,12 @@ Report:
 
       // Commit any fixes made during verification
       if (!skipGit) {
-        await commitIteration(config.workspacePath, 0, 'VERIFICATION', 'Verification fixes', true, config.verbose);
+        await commitIteration(
+          config.workspacePath,
+          0,
+          { kind: 'plain', action: 'Verification fixes', type: 'chore' },
+          config.verbose
+        );
       }
 
       return true;
@@ -1154,7 +1164,7 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
       if (firstAvailable) {
         console.log(chalk.cyan(`\nCommitting interrupted work (likely from ${firstAvailable.id})...`));
         const committed = await commitInterruptedWork(
-          config.workspacePath, firstAvailable.id, firstAvailable.title, config.verbose
+          config.workspacePath, firstAvailable, config.verbose
         );
         if (!committed) {
           console.log(chalk.red.bold('\n⚠ Failed to commit uncommitted changes'));
@@ -1379,19 +1389,11 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
 
         // Commit all batch changes at once
         if (!overrides?.skipGit && succeededIds.length > 0) {
-          const commitAction = succeededIds.length === batch.length
-            ? `Complete batch: ${batchLabel}`
-            : `Partial batch: ${succeededIds.join(', ')} succeeded`;
-          // Build detailed commit body with each task's title
-          const commitBodyLines: string[] = [];
-          for (const t of batch) {
-            const succeeded = succeededIds.includes(t.id);
-            commitBodyLines.push(`${succeeded ? '✓' : '✗'} ${t.id}: ${t.title}`);
-          }
-          const commitBody = commitBodyLines.join('\n');
           const commitResult = await commitIteration(
-            config.workspacePath, taskIteration,
-            batchIds[0], commitAction, true, config.verbose, commitBody
+            config.workspacePath,
+            taskIteration,
+            { kind: 'batch', tasks: batch, succeededIds },
+            config.verbose
           );
           if (commitResult.hookFailure) {
             hookFailureDetected = true;
@@ -1576,8 +1578,10 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
 
         if (!overrides?.skipGit) {
           const commitResult = await commitIteration(
-            config.workspacePath, taskIteration,
-            task.id, task.title, true, config.verbose
+            config.workspacePath,
+            taskIteration,
+            { kind: 'single-task', task, outcome: 'completed' },
+            config.verbose
           );
           if (commitResult.hookFailure) {
             hookFailureDetected = true;
@@ -1595,6 +1599,8 @@ export async function runLoop(config: DevLoopConfig, overrides?: RunLoopOverride
           console.log(chalk.red(`  Error Type: ${claudeResult.errorType}`));
           apiErrorDetected = true;
         } else {
+          // No commit on single-task failure; the task stays in-progress and any
+          // uncommitted changes are picked up by commitInterruptedWork on the next run.
           console.log(chalk.yellow('  Will retry on next cycle...'));
         }
       }

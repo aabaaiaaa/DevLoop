@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatDevloopCommit, isHookError, parseGitStatusOutput } from '../src/core/git.js';
+import { formatDevloopCommit, isHookError, parseGitStatusOutput, buildDevloopCommitMessageFromContext } from '../src/core/git.js';
+import type { Task } from '../src/types/index.js';
 
 describe('formatDevloopCommit', () => {
   it('uses custom format with {action} placeholder', () => {
@@ -124,5 +125,73 @@ describe('parseGitStatusOutput', () => {
     const output = ' M src\\core\\git.ts\n M .devloop\\session.json\n';
     const files = parseGitStatusOutput(output, ['.devloop/']);
     assert.deepEqual(files, ['src\\core\\git.ts']);
+  });
+});
+
+function task(o: Partial<Task>): Task {
+  return {
+    id: 'TASK-001', title: 'X', status: 'pending', dependencies: [],
+    description: '', verification: '', type: 'feat', ...o,
+  };
+}
+
+describe('buildDevloopCommitMessageFromContext', () => {
+  it('uses conventional builder when format is undefined (plain action)', () => {
+    const msg = buildDevloopCommitMessageFromContext(undefined, {
+      kind: 'plain', action: 'Initialize workspace', type: 'chore',
+    });
+    assert.equal(msg.subject, 'chore: Initialize workspace');
+    assert.equal(msg.body, undefined);
+  });
+
+  it('uses conventional builder when format is undefined (single task completed)', () => {
+    const t = task({ id: 'TASK-014', title: 'Add tracking', type: 'feat' });
+    const msg = buildDevloopCommitMessageFromContext(undefined, {
+      kind: 'single-task', task: t, outcome: 'completed',
+    });
+    assert.equal(msg.subject, 'feat: T14 - Add tracking');
+  });
+
+  it('uses conventional builder for batch context', () => {
+    const tasks = [
+      task({ id: 'TASK-001', title: 'A', type: 'feat' }),
+      task({ id: 'TASK-002', title: 'B', type: 'fix' }),
+    ];
+    const msg = buildDevloopCommitMessageFromContext(undefined, {
+      kind: 'batch', tasks, succeededIds: ['TASK-001', 'TASK-002'],
+    });
+    assert.equal(msg.subject, 'feat: T1, T2');
+  });
+
+  it('uses template substitution when format is set (plain action)', () => {
+    const msg = buildDevloopCommitMessageFromContext('chore(devloop): {action}', {
+      kind: 'plain', action: 'Initialize workspace',
+    });
+    assert.equal(msg.subject, 'chore(devloop): Initialize workspace');
+    assert.equal(msg.body, undefined);
+  });
+
+  it('uses template substitution when format is set (single task) — preserves legacy action text', () => {
+    const t = task({ id: 'TASK-014', title: 'Add tracking', type: 'feat' });
+    const msg = buildDevloopCommitMessageFromContext('chore(devloop): {action}', {
+      kind: 'single-task', task: t, outcome: 'completed',
+    });
+    assert.equal(msg.subject, 'chore(devloop): Complete TASK-014 - Add tracking');
+  });
+
+  it('template path with attempted task uses "Attempted" verb', () => {
+    const t = task({ id: 'TASK-014', title: 'Add tracking', type: 'feat' });
+    const msg = buildDevloopCommitMessageFromContext('chore(devloop): {action}', {
+      kind: 'single-task', task: t, outcome: 'attempted',
+    });
+    assert.equal(msg.subject, 'chore(devloop): Attempted TASK-014 - Add tracking');
+  });
+
+  it('template path with interrupted task uses "Interrupted work on" prefix', () => {
+    const t = task({ id: 'TASK-014', title: 'Add tracking', type: 'feat' });
+    const msg = buildDevloopCommitMessageFromContext('chore(devloop): {action}', {
+      kind: 'single-task', task: t, outcome: 'interrupted',
+    });
+    assert.equal(msg.subject, 'chore(devloop): Interrupted work on TASK-014 - Add tracking');
   });
 });
