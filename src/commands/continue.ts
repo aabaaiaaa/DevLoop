@@ -11,7 +11,7 @@ import { runLoop } from '../core/loop.js';
 import { parseTasks } from '../parser/tasks.js';
 import { archiveIteration, loadPriorContext } from '../core/archive.js';
 import { generateWorkspaceClaudeMd, generateAmendClaudeMd, generateContinueClaudeMd, commitWithRetry, detectAndConfigureCommitFormat } from './init.js';
-import { ensureGitRepo, getDevloopCommitMessage } from '../core/git.js';
+import { ensureGitRepo, buildDevloopCommitMessageFromContext } from '../core/git.js';
 
 interface ContinueOptions {
   workspace?: string;
@@ -279,8 +279,11 @@ async function amendRequirements(workspace: string, session: Session, currentIte
       if (code === 0) {
         await ensureGitRepo(workspace);
         const action = `Amend requirements (Phase ${currentIteration})`;
-        const commitMessage = await getDevloopCommitMessage(workspace, action);
-        await commitWithRetry(workspace, commitMessage, action);
+        const config = await readWorkspaceConfig(workspace);
+        const message = buildDevloopCommitMessageFromContext(config.devloopCommitFormat, {
+          kind: 'plain', action, type: 'chore',
+        });
+        await commitWithRetry(workspace, message.subject, action);
 
         console.log(chalk.green('\nRequirements amended.'));
         console.log(chalk.gray('Run "devloop status" to see your updated tasks.'));

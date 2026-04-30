@@ -6,6 +6,8 @@ const STATUS_REGEX = /^\s*-\s*\*\*Status\*\*:\s*(pending|in-progress|done)/i;
 const DEPS_REGEX = /^\s*-\s*\*\*Dependencies\*\*:\s*(.+)/i;
 const DESC_REGEX = /^\s*-\s*\*\*Description\*\*:\s*(.+)/i;
 const VERIFICATION_REGEX = /^\s*-\s*\*\*Verification\*\*:\s*(.+)/i;
+const TYPE_REGEX = /^\s*-\s*\*\*Type\*\*:\s*(.+)/i;
+const BREAKING_REGEX = /^\s*-\s*\*\*Breaking\*\*:\s*(.+)/i;
 
 export async function parseTasks(filePath: string): Promise<TaskList> {
   const content = await fs.readFile(filePath, 'utf-8');
@@ -69,6 +71,20 @@ export function parseTasksContent(content: string): TaskList {
       const verifyMatch = line.match(VERIFICATION_REGEX);
       if (verifyMatch) {
         currentTask.verification = verifyMatch[1].trim();
+        continue;
+      }
+
+      const typeMatch = line.match(TYPE_REGEX);
+      if (typeMatch) {
+        // Validation is deferred to normalizeType() at commit-build time. Unknown
+        // values flow through here and become 'chore' when a commit is constructed.
+        currentTask.type = typeMatch[1].trim().toLowerCase() as Task['type'];
+        continue;
+      }
+
+      const breakingMatch = line.match(BREAKING_REGEX);
+      if (breakingMatch) {
+        currentTask.breakingChange = breakingMatch[1].trim();
         continue;
       }
     }

@@ -8,7 +8,7 @@ import { createSession, readSession } from '../core/session.js';
 import { spawnClaudeInteractive } from '../core/claude.js';
 import { requireClaudeInstalled, promptUser, printBanner } from './shared.js';
 import { detectCommitFormat } from '../core/commit-format.js';
-import { ensureGitRepo, gitCommit, saveDevloopCommitFormat, getDevloopCommitMessage } from '../core/git.js';
+import { ensureGitRepo, gitCommit, saveDevloopCommitFormat, buildDevloopCommitMessageFromContext } from '../core/git.js';
 
 export interface PriorContext {
   iterationNumber: number;
@@ -47,7 +47,8 @@ Before responding to the user, you MUST use the **TodoWrite** tool to create thi
 2. Review for gaps and inconsistencies
 3. Write requirements.md
 4. Generate tasks.md
-5. Tell user to exit session
+5. Self-review the documents and resolve any major issues
+6. Tell user to exit session
 \`\`\`
 
 Create the checklist NOW, then proceed to step 1.
@@ -112,23 +113,29 @@ Each task should reference the requirements document for full context. The task 
 \`\`\`markdown
 ### TASK-001: Task title here
 - **Status**: pending
+- **Type**: feat
 - **Dependencies**: none
 - **Description**: Clear description of what needs to be done. Reference the requirements doc for detail.
 - **Verification**: A specific, testable check to confirm the task is complete.
 
 ### TASK-002: Another task
 - **Status**: pending
+- **Type**: fix
 - **Dependencies**: TASK-001
 - **Description**: This task depends on TASK-001 completing first.
 - **Verification**: Run "npm test" and all tests pass.
+- **Breaking**: Existing API consumers must add the X-Auth-Version header.
 \`\`\`
 
 ### Task Rules
 
 - Task IDs must be sequential: TASK-001, TASK-002, TASK-003, etc. For larger tasks that need to be broken down, use letter suffixes: TASK-001a, TASK-001b, etc.
-- **Tasks must be small and focused** — each should be completable by an automated AI agent in approximately 10-20 minutes. If a task would take longer, break it into smaller subtasks using letter suffixes. Large tasks will time out and fail.
+- **Tasks must be small and focused.** Each should be completable by an automated AI agent in approximately 10–20 minutes (avoid timeouts). If a task would take longer, break it into smaller subtasks using letter suffixes.
+- **Prefer logical decomposition over bundling.** Long-running DevLoop sessions are normal and expected — task count is not a thing to minimize. If a task touches multiple distinct concerns (schema + parser + tests + docs), split it into separate tasks tied by dependencies rather than packing them together. Many fine-grained tasks produce a cleaner per-task commit type.
 - Status must always be \`pending\` for new tasks
 - Dependencies: \`none\` or comma-separated task IDs (e.g., \`TASK-001, TASK-002\`)
+- **Type**: one of \`feat\`, \`fix\`, \`docs\`, \`style\`, \`refactor\`, \`perf\`, \`test\`, \`build\`, \`ci\`, \`chore\`, \`revert\`. Pick the type that best describes what the task does. This drives the Conventional Commits prefix on the auto-generated git commit, which in turn drives semver tooling (\`feat\` → minor, \`fix\` → patch, others → no bump). If unsure, use \`chore\`.
+- **Breaking** (optional): include this field only when the task introduces a backwards-incompatible change. The text is used verbatim as the body of a \`BREAKING CHANGE:\` footer in the commit. Example: \`- **Breaking**: New /v2 endpoints require an auth header.\`
 - Descriptions should be clear and actionable
 - **Every task MUST have a Verification field** with a specific, **targeted** check. Run only the tests relevant to the task, NOT the full test suite. Examples:
   - Good: \`npm test -- --grep "calculator"\` or \`npx jest src/calc.test.ts\`
@@ -140,6 +147,45 @@ Each task should reference the requirements document for full context. The task 
   - Bad: \`npx playwright test\` (runs ALL E2E tests — extremely slow)
 - **Match verification scope to change scope**: small changes need small targeted tests. Only run tests that exercise code paths touched by the task.
 - **Do NOT create any files other than requirements.md and tasks.md** — no source code, no config files, no project scaffolding
+
+---
+
+### Phase 4 — Self-review (after both documents are written)
+
+Before telling the user to exit, review what you just wrote. Run up to 3 review passes.
+
+In each pass, look for:
+
+**Major issues** — things that would break execution or contradict the plan. Fix them by editing the documents, then re-run the review:
+- Inconsistencies between requirements.md and tasks.md (e.g., requirements mention something that no task covers, or a task references concepts not in requirements)
+- Internal contradictions (one section says "use Postgres", another says "use SQLite")
+- Missing or broken dependencies (a task depends on an ID that doesn't exist)
+- Circular dependencies in the task graph
+- Non-sequential or duplicate task IDs
+- Tasks missing required fields (\`Type\`, \`Description\`, \`Verification\`)
+- Scope drift (tasks doing things requirements don't describe, or vice versa)
+
+**Minor issues** — things where multiple reasonable answers exist. Do NOT auto-fix; collect them for the user:
+- Ambiguous or under-specified wording where multiple interpretations are reasonable
+- Tasks that could be decomposed further (granularity opinion)
+- Ordering choices that could go either way
+- Optional features that may be over-scoped
+
+If after pass 3 there are still major issues you cannot resolve, demote them to a "couldn't auto-resolve" list shown alongside minor issues — do not loop further.
+
+When the loop ends, print the minor issues for the user in this format:
+
+\`\`\`
+Self-review complete after N pass(es).
+
+Minor issues for your review:
+1. ...
+2. ...
+
+You can ask me to address any of these, or exit (Ctrl+C) to accept as-is.
+\`\`\`
+
+Then wait for the user's decision. If they ask for changes, address them. If they exit, DevLoop commits.
 
 After writing both documents, tell the user they need to exit this Claude session (Ctrl+C or /exit) to continue — DevLoop will commit the files and set up the workspace for task execution with "devloop run".
 `;
@@ -229,7 +275,8 @@ Before responding to the user, you MUST use the **TodoWrite** tool to create thi
 2. Discuss amendments with user
 3. Update requirements.md
 4. Update pending tasks in tasks.md
-5. Tell user to exit session
+5. Self-review the changes and resolve any major issues
+6. Tell user to exit session
 \`\`\`
 
 Create the checklist NOW, then proceed to step 1 by reading both files.
@@ -272,12 +319,57 @@ Rules:
 \`\`\`markdown
 ### TASK-001: Task title here
 - **Status**: pending
+- **Type**: feat
 - **Dependencies**: none
 - **Description**: Clear description of what needs to be done.
 - **Verification**: A specific, testable check to confirm the task is complete.
+- **Breaking**: (optional) Description of any backwards-incompatible change introduced.
 \`\`\`
 
 Task IDs support letter suffixes for subtasks (e.g., TASK-001a, TASK-001b).
+
+- **Type**: one of \`feat\`, \`fix\`, \`docs\`, \`style\`, \`refactor\`, \`perf\`, \`test\`, \`build\`, \`ci\`, \`chore\`, \`revert\`. Pick the type that best describes what the task does. Drives the Conventional Commits prefix on the auto-generated git commit. If unsure, use \`chore\`.
+- **Breaking** (optional): include only when the task introduces a backwards-incompatible change. The text becomes the body of a \`BREAKING CHANGE:\` footer.
+- **Prefer logical decomposition over bundling.** Long-running DevLoop sessions are normal and expected — task count is not a thing to minimize. When adding new tasks, split distinct concerns (schema + parser + tests + docs) into separate tasks tied by dependencies rather than packing them together.
+
+---
+
+## Self-review
+
+Before telling the user to exit, review your changes. Run up to 3 review passes over the requirements diff and **pending tasks only**. Locked (done / in-progress) tasks are out of scope — do not review them and do not flag issues that could only be resolved by changing them.
+
+In each pass, look for:
+
+**Major issues** — fix them by editing the documents, then re-run the review:
+- Inconsistencies between requirements.md and tasks.md
+- Internal contradictions
+- Missing or broken dependencies (a task depends on an ID that doesn't exist)
+- Circular dependencies in the task graph among pending tasks
+- Non-sequential or duplicate task IDs
+- New tasks missing required fields (\`Type\`, \`Description\`, \`Verification\`)
+- Scope drift
+
+**Minor issues** — collect them for the user, do NOT auto-fix:
+- Ambiguous or under-specified wording
+- Tasks that could be decomposed further
+- Ordering choices that could go either way
+- Optional features that may be over-scoped
+
+If after pass 3 there are still major issues you cannot resolve, demote them to a "couldn't auto-resolve" list shown alongside minor issues — do not loop further.
+
+When the loop ends, print the minor issues for the user in this format:
+
+\`\`\`
+Self-review complete after N pass(es).
+
+Minor issues for your review:
+1. ...
+2. ...
+
+You can ask me to address any of these, or exit (Ctrl+C) to accept as-is.
+\`\`\`
+
+Then wait for the user's decision. If they ask for changes, address them. If they exit, DevLoop commits.
 
 ---
 
@@ -331,7 +423,8 @@ Before responding to the user, you MUST use the **TodoWrite** tool to create thi
 2. Discuss changes with user
 3. Update requirements.md
 4. Update tasks.md
-5. Tell user to exit session
+5. Self-review the changes and resolve any major issues
+6. Tell user to exit session
 \`\`\`
 
 Create the checklist NOW, then proceed to step 1 by reading both files.
@@ -348,12 +441,57 @@ Create the checklist NOW, then proceed to step 1 by reading both files.
 \`\`\`markdown
 ### TASK-001: Task title here
 - **Status**: pending
+- **Type**: feat
 - **Dependencies**: none
 - **Description**: Clear description of what needs to be done.
 - **Verification**: A specific, testable check to confirm the task is complete.
+- **Breaking**: (optional) Description of any backwards-incompatible change introduced.
 \`\`\`
 
 Task IDs support letter suffixes for subtasks (e.g., TASK-001a, TASK-001b).
+
+- **Type**: one of \`feat\`, \`fix\`, \`docs\`, \`style\`, \`refactor\`, \`perf\`, \`test\`, \`build\`, \`ci\`, \`chore\`, \`revert\`. Pick the type that best describes what the task does. Drives the Conventional Commits prefix on the auto-generated git commit. If unsure, use \`chore\`.
+- **Breaking** (optional): include only when the task introduces a backwards-incompatible change. The text becomes the body of a \`BREAKING CHANGE:\` footer.
+- **Prefer logical decomposition over bundling.** Long-running DevLoop sessions are normal and expected — task count is not a thing to minimize. Split distinct concerns (schema + parser + tests + docs) into separate tasks tied by dependencies rather than packing them together.
+
+---
+
+## Self-review
+
+Before telling the user to exit, review your changes. Run up to 3 review passes.
+
+In each pass, look for:
+
+**Major issues** — fix them by editing the documents, then re-run the review:
+- Inconsistencies between requirements.md and tasks.md
+- Internal contradictions
+- Missing or broken dependencies
+- Circular dependencies in the task graph
+- Non-sequential or duplicate task IDs
+- Tasks missing required fields (\`Type\`, \`Description\`, \`Verification\`)
+- Scope drift
+
+**Minor issues** — collect them for the user, do NOT auto-fix:
+- Ambiguous or under-specified wording
+- Tasks that could be decomposed further
+- Ordering choices that could go either way
+- Optional features that may be over-scoped
+
+If after pass 3 there are still major issues you cannot resolve, demote them to a "couldn't auto-resolve" list shown alongside minor issues — do not loop further.
+
+When the loop ends, print the minor issues for the user in this format:
+
+\`\`\`
+Self-review complete after N pass(es).
+
+Minor issues for your review:
+1. ...
+2. ...
+
+You can ask me to address any of these, or exit (Ctrl+C) to accept as-is.
+\`\`\`
+
+Then wait for the user's decision. If they ask for changes, address them. If they exit, DevLoop commits.
 
 ---
 
@@ -437,20 +575,24 @@ export async function commitWithRetry(workspace: string, initialMessage: string,
  */
 export async function detectAndConfigureCommitFormat(workspace: string, action: string): Promise<{ message: string; action: string }> {
   const detection = await detectCommitFormat(workspace);
-  const defaultMessage = `DevLoop: ${action}`;
+  const config = await readWorkspaceConfig(workspace);
+  const defaultMessage = buildDevloopCommitMessageFromContext(config.devloopCommitFormat, {
+    kind: 'plain', action, type: 'chore',
+  }).subject;
 
   if (detection.detected) {
-    // Ask user for initial commit message since hooks are present
     console.log(chalk.yellow(`\nDetected commit message hooks (${detection.source}).`));
-    console.log(chalk.cyan('The default message may not pass validation.'));
+    if (detection.source === 'commitlint' && !config.devloopCommitFormat) {
+      console.log(chalk.cyan('DevLoop now uses Conventional Commits by default — this should pass commitlint.'));
+    } else {
+      console.log(chalk.cyan('The default message may not pass validation.'));
+    }
     console.log(chalk.gray(`  Default: "${defaultMessage}"`));
     console.log(chalk.gray(`  Tip: Use {action} placeholder for reusable format, e.g., "chore(devloop): {action}"`));
     const customMessage = await promptForInput(chalk.cyan('Commit message (press Enter for default): '));
 
     if (customMessage) {
-      // Expand {action} placeholder
       const expanded = customMessage.replace(/\{action\}/g, action);
-      // Save the format for future DevLoop commits
       await saveDevloopCommitFormat(workspace, customMessage, action);
       console.log(chalk.gray('Saved commit format for future DevLoop commits.'));
       return { message: expanded, action };

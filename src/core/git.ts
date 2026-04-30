@@ -2,10 +2,22 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import chalk from 'chalk';
+import type { Task, ConventionalType } from '../types/index.js';
 import { readWorkspaceConfig, writeWorkspaceConfig } from './config.js';
+import {
+  buildPlainMessage,
+  buildSingleTaskMessage,
+  buildBatchMessage,
+  type ConventionalMessage,
+  type SingleTaskOutcome,
+} from './conventional-commits.js';
 
 /**
- * Format a DevLoop internal commit message using the configured format
+ * Format a DevLoop internal commit message using the configured format template.
+ * Called via `buildDevloopCommitMessageFromContext` when `devloopCommitFormat` is set.
+ * The `undefined` fallback to `DevLoop: ${action}` is retained for the unit tests
+ * that exercise this function directly; production code never enters that branch.
+ *
  * @param action - What DevLoop is doing (e.g., "Initialize workspace", "Start run")
  */
 export function formatDevloopCommit(format: string | undefined, action: string): string {
@@ -16,11 +28,56 @@ export function formatDevloopCommit(format: string | undefined, action: string):
 }
 
 /**
- * Get the DevLoop commit message for an action, using workspace config if available
+ * Context for building a DevLoop commit message.
+ * 'plain' is for non-task commits (init, amend, review, verification, .gitignore).
+ * 'single-task' is for single-task iteration commits and interrupted-work commits.
+ * 'batch' is for batch iteration commits.
  */
-export async function getDevloopCommitMessage(workspace: string, action: string): Promise<string> {
-  const config = await readWorkspaceConfig(workspace);
-  return formatDevloopCommit(config.devloopCommitFormat, action);
+export type DevloopCommitContext =
+  | { kind: 'plain'; action: string; type?: ConventionalType }
+  | { kind: 'single-task'; task: Task; outcome: SingleTaskOutcome }
+  | { kind: 'batch'; tasks: ReadonlyArray<Task>; succeededIds: ReadonlyArray<string> };
+
+/** Build the action string used by the legacy template path. */
+function legacyAction(ctx: DevloopCommitContext): string {
+  if (ctx.kind === 'plain') return ctx.action;
+  if (ctx.kind === 'single-task') {
+    const verb =
+      ctx.outcome === 'completed' ? 'Complete'
+      : ctx.outcome === 'attempted' ? 'Attempted'
+      : 'Interrupted work on';
+    if (ctx.outcome === 'interrupted') {
+      return `Interrupted work on ${ctx.task.id} - ${ctx.task.title}`;
+    }
+    return `${verb} ${ctx.task.id} - ${ctx.task.title}`;
+  }
+  // batch
+  const succeededTasks = ctx.tasks.filter(t => ctx.succeededIds.includes(t.id));
+  const ids = ctx.tasks.map(t => t.id).join(', ');
+  if (succeededTasks.length === ctx.tasks.length) return `Complete batch: ${ids}`;
+  if (succeededTasks.length === 0) return `Attempted batch: ${ids}`;
+  return `Partial batch: ${succeededTasks.map(t => t.id).join(', ')} succeeded`;
+}
+
+/**
+ * Build the commit message from a context. If `format` is set, use template substitution
+ * (legacy path). If unset, build a Conventional Commits message from the context.
+ */
+export function buildDevloopCommitMessageFromContext(
+  format: string | undefined,
+  ctx: DevloopCommitContext
+): ConventionalMessage {
+  if (format) {
+    const action = legacyAction(ctx);
+    return { subject: format.replace(/\{action\}/g, action).trim() };
+  }
+  if (ctx.kind === 'plain') {
+    return buildPlainMessage(ctx.action, ctx.type);
+  }
+  if (ctx.kind === 'single-task') {
+    return buildSingleTaskMessage(ctx.task, { outcome: ctx.outcome });
+  }
+  return buildBatchMessage(ctx.tasks, ctx.succeededIds);
 }
 
 /**
@@ -354,8 +411,11 @@ export async function ensureGitRepo(workspace: string, verbose: boolean = false)
     if (gitignoreChanged) {
       const gitRoot = await getGitRoot(workspace) || workspace;
       await execGit(['add', '.gitignore'], gitRoot);
-      const commitMsg = await getDevloopCommitMessage(workspace, 'Update .gitignore');
-      const result = await execGit(['commit', '-m', commitMsg], gitRoot);
+      const config = await readWorkspaceConfig(workspace);
+      const msg = buildDevloopCommitMessageFromContext(config.devloopCommitFormat, {
+        kind: 'plain', action: 'Update .gitignore', type: 'chore',
+      });
+      const result = await execGit(['commit', '-m', msg.subject], gitRoot);
       if (verbose && result.success) {
         console.log(chalk.gray('Committed .gitignore updates'));
       }
@@ -381,8 +441,11 @@ export async function ensureGitRepo(workspace: string, verbose: boolean = false)
   await ensureGitignore(workspace, verbose);
 
   // Make initial commit with all existing files
-  const commitMsg = await getDevloopCommitMessage(workspace, 'Initial commit');
-  const commitResult = await gitCommit(workspace, commitMsg, verbose);
+  const config = await readWorkspaceConfig(workspace);
+  const msg = buildDevloopCommitMessageFromContext(config.devloopCommitFormat, {
+    kind: 'plain', action: 'Initial commit', type: 'chore',
+  });
+  const commitResult = await gitCommit(workspace, msg.subject, verbose);
 
   if (verbose) {
     if (commitResult.committed) {
@@ -491,40 +554,28 @@ export async function getUncommittedDiff(workspace: string): Promise<string | nu
 }
 
 /**
- * Commit uncommitted changes from a previous interrupted session
- * This preserves the partial work in git history before starting fresh
+ * Commit uncommitted changes from a previous interrupted session.
+ * `task` is optional — pass it when we know which task was active.
  */
 export async function commitInterruptedWork(
   workspace: string,
-  taskId?: string,
-  taskTitle?: string,
+  task?: Task,
   verbose: boolean = false
 ): Promise<boolean> {
   const gitAvailable = await isGitAvailable();
-  if (!gitAvailable) {
-    return false;
-  }
+  if (!gitAvailable) return false;
 
   const isRepo = await isGitRepo(workspace);
-  if (!isRepo) {
-    return false;
-  }
+  if (!isRepo) return false;
 
-  // Build action description
-  let action: string;
-  if (taskId && taskTitle) {
-    action = `Interrupted work on ${taskId} - ${taskTitle}`;
-  } else if (taskId) {
-    action = `Interrupted work on ${taskId}`;
-  } else {
-    action = 'Interrupted work from previous session';
-  }
-
-  // Use devloopCommitFormat if configured
   const workspaceConfig = await readWorkspaceConfig(workspace);
-  const message = formatDevloopCommit(workspaceConfig.devloopCommitFormat, action);
 
-  const result = await gitCommit(workspace, message, verbose);
+  const ctx: DevloopCommitContext = task
+    ? { kind: 'single-task', task, outcome: 'interrupted' }
+    : { kind: 'plain', action: 'Interrupted work from previous session' };
+
+  const message = buildDevloopCommitMessageFromContext(workspaceConfig.devloopCommitFormat, ctx);
+  const result = await gitCommit(workspace, message.subject, verbose, message.body);
 
   if (verbose && result.committed) {
     console.log(chalk.gray(`  Git: Committed interrupted work`));
@@ -536,44 +587,29 @@ export async function commitInterruptedWork(
 }
 
 /**
- * Commit changes after an iteration
+ * Commit changes after an iteration. Single-task and batch variants share this entry point;
+ * the caller passes a context that describes which kind of commit it is.
  */
 export async function commitIteration(
   workspace: string,
   iteration: number,
-  taskId: string | null,
-  taskTitle: string | null,
-  success: boolean,
-  verbose: boolean = false,
-  body?: string
+  ctx: DevloopCommitContext,
+  verbose: boolean = false
 ): Promise<{ committed: boolean; hookFailure?: boolean }> {
   const gitAvailable = await isGitAvailable();
-  if (!gitAvailable) {
-    return { committed: false };
-  }
+  if (!gitAvailable) return { committed: false };
 
   const isRepo = await isGitRepo(workspace);
-  if (!isRepo) {
-    return { committed: false };
-  }
+  if (!isRepo) return { committed: false };
 
-  // Load workspace config for commit format
   const workspaceConfig = await readWorkspaceConfig(workspace);
+  const message = buildDevloopCommitMessageFromContext(workspaceConfig.devloopCommitFormat, ctx);
 
-  // Build the action description
-  const actionDescription = taskId && taskTitle
-    ? `${success ? 'Complete' : 'Attempted'} ${taskId} - ${taskTitle}`
-    : `Iteration ${iteration}`;
-
-  // Use devloopCommitFormat if configured, otherwise default
-  const message = formatDevloopCommit(workspaceConfig.devloopCommitFormat, actionDescription);
-
-  const result = await gitCommit(workspace, message, verbose, body);
+  const result = await gitCommit(workspace, message.subject, verbose, message.body);
 
   if (verbose && result.committed) {
     console.log(chalk.gray(`  Git: Committed iteration ${iteration}`));
   } else if (result.isHookFailure) {
-    // Hook failure message already printed by gitCommit
     return { committed: false, hookFailure: true };
   } else if (result.error) {
     console.log(chalk.yellow(`  Git: Commit failed - ${result.error}`));
